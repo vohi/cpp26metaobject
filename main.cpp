@@ -1,43 +1,94 @@
 #include <QtCore>
 
+#include <QtCore/private/qmetaobject_p.h>
 #include "types.h"
+
+QDebug operator<<(QDebug dbg, const QMetaProperty &that)
+{
+    QDebugStateSaver saver(dbg);
+    dbg.nospace().noquote();
+    dbg << "QMetaProperty(" << that.typeName() << " " << that.name() << ")";
+    return dbg;
+}
+QDebug operator<<(QDebug dbg, const QMetaEnum &that)
+{
+    QDebugStateSaver saver(dbg);
+    dbg.nospace().noquote();
+    dbg << "QMetaEnum(" << that.name() << "[";
+    for (int i = 0; i < that.keyCount(); ++i) {
+        dbg << that.key(i) << " = " << that.value(i);
+        if (i < that.keyCount() - 1)
+            dbg << ", ";
+    }
+    dbg << "])";
+    return dbg;
+}
+
+QDebug operator<<(QDebug dbg, const QMetaMethod &that)
+{
+    QDebugStateSaver saver(dbg);
+    dbg.nospace().noquote();
+    return dbg;
+}
+
+QDebug operator<<(QDebug dbg, const QMetaClassInfo &that)
+{
+    QDebugStateSaver saver(dbg);
+    dbg.nospace().noquote();
+    return dbg;
+}
+
+QDebug operator<<(QDebug dbg, const QMetaObject &that)
+{
+    QDebugStateSaver saver(dbg);
+    dbg.nospace().noquote() << "class " << that.className();
+    if (const auto *super = that.superClass())
+        dbg << " : " << super->className();
+    dbg << Qt::endl;
+
+    dbg << "ClassInfos:" << that.classInfoOffset() << " + "
+                         << that.classInfoCount() - that.classInfoOffset() << Qt::endl;
+    for (int i = 0; i < that.classInfoCount(); ++i)
+        dbg << "- " << i << ": " << that.classInfo(i) << Qt::endl;
+
+    dbg << "Properties:" << that.propertyOffset() << " + "
+                         << that.propertyCount() - that.propertyOffset() << Qt::endl;
+    for (int i = 0; i < that.propertyCount(); ++i)
+        dbg << "- " << i << ": " << that.property(i) << Qt::endl;
+
+    dbg << "Enumerators:" << that.enumeratorOffset() << " + "
+                          << that.enumeratorCount() - that.enumeratorOffset() << Qt::endl;
+    for (int i = 0; i < that.enumeratorCount(); ++i)
+        dbg << "- " << i << ": " << that.enumerator(i) << Qt::endl;
+
+    dbg << "Methods:" << that.methodOffset() << " + "
+                              << that.methodCount() - that.methodOffset() << Qt::endl;
+    for (int i = 0; i < that.methodCount(); ++i)
+        dbg << "- " << i << ": " << that.method(i) << Qt::endl;
+
+    return dbg;
+}
+
+template <typename MetaObject>
+void print(const MetaObject &mo)
+{
+    const auto moTypeName = QMetaType::fromType<MetaObject>().name();
+    qDebug() << Qt::endl << moTypeName << "for" << mo;
+}
 
 int main()
 {
     UserWithNumber user;
-
-    qDebug() << "Baseclass";
-    qDebug() << *user.Object::metaObject();
-
     Object *userAsObject = &user;
-    auto *metaObject = userAsObject->metaObject();
+    auto *q26MetaObject = userAsObject->q26MetaObject();
 
-    qDebug() << "Inspect polymorphic";
-    qDebug() << metaObject->className() << metaObject->bases();
-    qDebug() << "ClassInfo count" << metaObject->classInfoCount();
-    for (int i = 0; i < metaObject->classInfoCount(); ++i) {
-        qDebug().nospace() << "- " << i << ": " << metaObject->classInfo(i);
-    }
+    print (*user.Object::q26MetaObject());
 
-    qDebug() << "Enumerator count" << metaObject->enumeratorCount();
-    for (int i = 0; i < metaObject->enumeratorCount(); ++i) {
-        qDebug().nospace() << "- " << i << ": " << metaObject->enumerator(i);
-    }
+    print(*q26MetaObject);
+    print(*userAsObject->metaObject());
+    print(Qt26::QStaticMetaObject::fromType<decltype(user)>());
 
-    qDebug() << "Property count" << metaObject->propertyOffset() << "+"
-                                 << metaObject->propertyCount() - metaObject->propertyOffset();
-    for (int i = 0 /*metaObject->propertyOffset()*/; i < metaObject->propertyCount(); ++i) {
-        const auto property = metaObject->property(i);
-        qDebug().nospace() << "- " << i << ": " << property << " -> " << user.property(property.m_name);
-    }
-//    qDebug() << "Property index of 'value' =" << metaObject->indexOfProperty("value");
-
-    qDebug() << "Methods";
-    for (int i = 0; i < metaObject->methodCount(); ++i) {
-        const auto method = metaObject->method(i);
-        qDebug().nospace() << "- " << i << ": " << method;
-    }
-
+    qDebug() << Qt::endl << "Signal test";
     user.connect(&User::nameChanged, [&user]{
         qDebug() << "nameChanged to" << user.name();
     });
@@ -58,22 +109,12 @@ int main()
 
     user.signalWithArgs(42, 3.14159);
 
-    constexpr auto object = Qt26::QStaticMetaObject::fromType<User>();
-    { // this works if we get the metaObject statically
-        constexpr auto propertyCount = object.propertyCount();
-        constexpr auto firstProperty = object.property(0);
-        constexpr auto signalCount = object.signalCount();
+    { // this works if we get the q26MetaObject statically
+        constexpr auto staticMetaObject = Qt26::QStaticMetaObject::fromType<decltype(user)>();
+        constexpr auto propertyCount = staticMetaObject.propertyCount();
+        constexpr auto firstProperty = staticMetaObject.property(0);
+        constexpr auto signalCount = staticMetaObject.signalCount();
     }
-    qDebug() << "Inspect statically";
-    qDebug() << object;
-
-    for (int i = 0; i < object.propertyCount(); ++i) {
-        qDebug().nospace() << "- " << i << ": " << object.property(i);
-    }
-    qDebug() << Qt::endl;
-
-    qDebug() << "Methods" << object.methods();
-    qDebug() << "Signal count" << object.signalCount();
 
     return 0;
 }

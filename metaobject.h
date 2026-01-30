@@ -6,6 +6,8 @@
 #include <utility>
 
 #include <QtCore/qdebug.h>
+#include <QtCore/qtmocconstants.h>
+#include <QtCore/qtmochelpers.h>
 #include <QtCore/qvariant.h>
 
 struct Object;
@@ -159,6 +161,11 @@ struct QStaticMetaData
     std::string_view m_name;
     std::size_t m_index = -1;
 
+    constexpr std::size_t size() const
+    {
+        return m_name.size() + 1;
+    }
+
     friend inline QDebug operator<<(QDebug dbg, const QStaticMetaData &that);
 };
 
@@ -214,6 +221,15 @@ struct QStaticMetaProperty : QStaticMetaData
         return dbg;
     }
 
+    constexpr std::size_t size() const
+    {
+        return QStaticMetaData::size()
+             + m_type.size() + 1
+             + m_getter.size() + 1
+             + m_setter.size() + 1
+             + m_notify.size() + 1;
+    }
+
     std::string_view m_type;
     std::string_view m_getter;
     std::string_view m_setter;
@@ -231,6 +247,16 @@ struct QStaticMetaEnum : QStaticMetaData
         long value = -1;
     };
     std::vector<Item>(*items)() = nullptr;
+
+    constexpr std::size_t size() const
+    {
+        std::size_t bytes = QStaticMetaData::size();
+        for (const auto &item : items()) {
+            bytes += item.name.size() + 1;
+            bytes += sizeof(Item::value);
+        }
+        return bytes;
+    }
 
     friend QDebug operator<<(QDebug dbg, const QStaticMetaEnum &that)
     {
@@ -281,11 +307,18 @@ struct QStaticMetaClassInfo : QStaticMetaData
 {
     consteval QStaticMetaClassInfo(std::string_view name, std::string_view value)
         : QStaticMetaData(Qt26::MetaEntity::ClassInfo)
-        , m_name(name), m_value(value)
-    {}
+        , m_value(value)
+    {
+        m_name = name;
+    }
 
-    std::string_view m_name;
     std::string_view m_value;
+
+    constexpr std::size_t size() const
+    {
+        return QStaticMetaData::size()
+             + m_value.size() + 1;
+    }
 
     friend QDebug operator<<(QDebug dbg, const QStaticMetaClassInfo &that)
     {
@@ -312,6 +345,15 @@ struct QStaticMetaMethod : QStaticMetaData
     };
     std::vector<Parameter> m_parameters;
 
+    constexpr std::size_t size() const
+    {
+        std::size_t bytes = QStaticMetaData::size();
+        for (const auto &param : m_parameters) {
+            bytes += param.name.size() + 1
+                   + sizeof(Parameter::type);
+        }
+        return bytes;
+    }
     template <std::size_t count, typename Ret>
     struct SignalArgs
     {
@@ -375,35 +417,30 @@ struct QStaticMetaObject
     std::vector<std::string_view> (*bases)() = nullptr;
 
     std::vector<QStaticMetaProperty> (*properties)() = nullptr;
-    std::size_t (*propertyOffset)() = nullptr;
-    std::size_t (*propertyCount)() = nullptr;
-    QStaticMetaProperty (*property)(std::size_t) = nullptr;
-    std::size_t (*indexOfProperty)(std::string_view) = nullptr;
+    int (*propertyOffset)() = nullptr;
+    int (*propertyCount)() = nullptr;
+    QStaticMetaProperty (*property)(int) = nullptr;
+    int (*indexOfProperty)(std::string_view) = nullptr;
 
     std::vector<QStaticMetaEnum> (*enumerators)() = nullptr;
-    std::size_t (*enumeratorOffset)() = nullptr;
-    std::size_t (*enumeratorCount)() = nullptr;
-    QStaticMetaEnum (*enumerator)(std::size_t) = nullptr;
-    std::size_t (*indexOfEnumerator)(std::string_view) = nullptr;
+    int (*enumeratorOffset)() = nullptr;
+    int (*enumeratorCount)() = nullptr;
+    QStaticMetaEnum (*enumerator)(int) = nullptr;
+    int (*indexOfEnumerator)(std::string_view) = nullptr;
 
     std::vector<QStaticMetaClassInfo> (*classInfos)() = nullptr;
-    std::size_t (*classInfoOffset)() = nullptr;
-    std::size_t (*classInfoCount)() = nullptr;
-    QStaticMetaClassInfo (*classInfo)(std::size_t) = nullptr;
-    std::size_t (*indexOfClassInfo)(std::string_view) = nullptr;
+    int (*classInfoOffset)() = nullptr;
+    int (*classInfoCount)() = nullptr;
+    QStaticMetaClassInfo (*classInfo)(int) = nullptr;
+    int (*indexOfClassInfo)(std::string_view) = nullptr;
 
     std::vector<QStaticMetaMethod> (*methods)() = nullptr;
-    std::size_t (*methodOffset)() = nullptr;
-    std::size_t (*methodCount)() = nullptr;
-    QStaticMetaMethod (*method)(std::size_t) = nullptr;
-    std::size_t (*indexOfMethod)(std::string_view) = nullptr;
+    int (*methodOffset)() = nullptr;
+    int (*methodCount)() = nullptr;
+    QStaticMetaMethod (*method)(int) = nullptr;
+    int (*indexOfMethod)(std::string_view) = nullptr;
 
-    enum class Call
-    {
-        GetProperty,
-        SetProperty,
-    };
-    int (*meta_call)(Call, int, Object *, void **) = nullptr;
+    int (*static_metacall)(Object *, QMetaObject::Call, int, void **) = nullptr;
 
     friend QDebug operator<<(QDebug dbg, const QStaticMetaObject &that)
     {
@@ -422,14 +459,25 @@ struct QStaticMetaObject
         }
         dbg << Qt::endl;
         QDebugStateSaver saver(dbg);
+        dbg << "ClassInfos:" << that.classInfoOffset() << " + "
+                             << that.classInfoCount() - that.classInfoOffset() << Qt::endl;
         for (const auto &data : that.classInfos())
-            dbg << data << Qt::endl;
+            dbg << "- " << data << Qt::endl;
+
+        dbg << "Properties:" << that.propertyOffset() << " + "
+                             << that.propertyCount() - that.propertyOffset() << Qt::endl;
         for (const auto &data : that.properties())
-            dbg << data << Qt::endl;
+            dbg << "- " << data << Qt::endl;
+
+        dbg << "Enumerators:" << that.enumeratorOffset() << " + "
+                              << that.enumeratorCount() - that.enumeratorOffset() << Qt::endl;
         for (const auto &data : that.enumerators())
-            dbg << data << Qt::endl;
+            dbg << "- " << data << Qt::endl;
+
+        dbg << "Methods:" << that.methodOffset() << " + "
+                          << that.methodCount() - that.methodOffset() << Qt::endl;
         for (const auto &data : that.methods())
-            dbg << data << Qt::endl;
+            dbg << "- " << data << Qt::endl;
         return dbg;
     }
 
@@ -545,21 +593,21 @@ public:
         return result;
     }
 
-    static constexpr std::size_t propertyOffset()
+    static constexpr int propertyOffset()
     {
-        std::size_t offset = 0;
+        int offset = 0;
         withBases([&offset]<typename BaseMO>{ offset += BaseMO::propertyCount(); });
         return offset;
     }
 
-    static constexpr std::size_t propertyCount()
+    static constexpr int propertyCount()
     {
         return properties().size();
     }
 
-    static constexpr std::size_t indexOfProperty(std::string_view name)
+    static constexpr int indexOfProperty(std::string_view name)
     {
-        std::size_t i = 0;
+        int i = 0;
         for (const auto &property : properties()) {
             if (property.m_name == name)
                 return i;
@@ -568,7 +616,7 @@ public:
         return -1;
     }
 
-    static constexpr QStaticMetaProperty property(std::size_t idx)
+    static constexpr QStaticMetaProperty property(int idx)
     {
         return properties().at(idx);
     }
@@ -587,22 +635,22 @@ public:
         return result;
     }
 
-    static constexpr std::size_t enumeratorOffset()
+    static constexpr int enumeratorOffset()
     {
-        std::size_t offset = 0;
+        int offset = 0;
         withBases([&offset]<typename BaseMO>{ offset += BaseMO::enumeratorCount(); });
         return offset;
     }
 
-    static constexpr std::size_t enumeratorCount()
+    static constexpr int enumeratorCount()
     {
         constexpr auto count = enumerators().size();
         return count;
     }
 
-    static constexpr std::size_t indexOfEnumerator(std::string_view name)
+    static constexpr int indexOfEnumerator(std::string_view name)
     {
-        std::size_t i = 0;
+        int i = 0;
         for (const auto &enumerator : enumerators()) {
             if (enumerator.m_name == name)
                 return i;
@@ -611,7 +659,7 @@ public:
         return -1;
     }
 
-    static constexpr QStaticMetaEnum enumerator(std::size_t idx)
+    static constexpr QStaticMetaEnum enumerator(int idx)
     {
         return enumerators().at(idx);
     }
@@ -630,22 +678,22 @@ public:
         return result;
     }
 
-    static constexpr std::size_t classInfoOffset()
+    static constexpr int classInfoOffset()
     {
-        std::size_t offset = 0;
+        int offset = 0;
         withBases([&offset]<typename BaseMO>{ offset += BaseMO::classInfoCount(); });
         return offset;
     }
 
-    static constexpr std::size_t classInfoCount()
+    static constexpr int classInfoCount()
     {
         constexpr auto count = classInfos().size();
         return count;
     }
 
-    static constexpr std::size_t indexOfClassInfo(std::string_view name)
+    static constexpr int indexOfClassInfo(std::string_view name)
     {
-        std::size_t i = 0;
+        int i = 0;
         for (const auto &classInfo : classInfos()) {
             if (classInfo.m_name == name)
                 return i;
@@ -654,7 +702,7 @@ public:
         return -1;
     }
 
-    static constexpr QStaticMetaClassInfo classInfo(std::size_t idx)
+    static constexpr QStaticMetaClassInfo classInfo(int idx)
     {
         return classInfos().at(idx);
     }
@@ -691,24 +739,24 @@ public:
         return result;
     }
 
-    static constexpr std::size_t methodOffset()
+    static constexpr int methodOffset()
     {
-        std::size_t offset = 0;
+        int offset = 0;
         withBases([&offset]<typename BaseMO>{ offset += BaseMO::methodCount(); });
         return offset;
     }
 
-    static constexpr std::size_t methodCount()
+    static constexpr int methodCount()
     {
         return methods().size();
     }
 
-    static constexpr QStaticMetaMethod method(std::size_t idx)
+    static constexpr QStaticMetaMethod method(int idx)
     {
         return methods().at(idx);
     }
 
-    static constexpr std::size_t indexOfMethod(std::string_view name)
+    static constexpr int indexOfMethod(std::string_view name)
     {
         int i = 0;
         for (const auto &method : methods()) {
@@ -719,9 +767,9 @@ public:
         return -1;
     }
 
-    static constexpr std::size_t signalCount()
+    static constexpr int signalCount()
     {
-        std::size_t count = 0;
+        int count = 0;
         for (const auto &method : methods()) {
             if (method.m_metaEntity == Qt26::MetaEntity::Signal)
                 ++count;
@@ -729,7 +777,7 @@ public:
         return count;
     }
 
-    static constexpr std::string_view signal(std::size_t idx)
+    static constexpr std::string_view signal(int idx)
     {
         std::string_view name;
         for (const auto &method : methods()) {
@@ -742,9 +790,9 @@ public:
         return name;
     }
 
-    static constexpr std::size_t indexOfSignal(std::string_view name)
+    static constexpr int indexOfSignal(std::string_view name)
     {
-        std::size_t count = 0;
+        int count = 0;
         for (const auto &method : methods()) {
             if (method.m_metaEntity == Qt26::MetaEntity::Signal) {
                 if (method.m_name == name)
@@ -755,13 +803,13 @@ public:
         return -1;
     }
 
-    static constexpr int meta_call(Call call, int what, Object *o, void **args)
+    static constexpr int static_metacall(Object *o, QMetaObject::Call call, int what, void **args)
     {
         if (what < 0)
             return what;
 
         withBases([&]<typename BaseMO>{
-            what = BaseMO::meta_call(call, what, o, args);
+            what = BaseMO::static_metacall(o, call, what, args);
             return what >= 0;
         });
         if (what < 0)
@@ -772,13 +820,13 @@ public:
         else
             object = static_cast<Class *>(o);
         switch (call) {
-        case Call::GetProperty:
-        case Call::SetProperty: if (what < propertyCount()) {
+        case QMetaObject::ReadProperty:
+        case QMetaObject::WriteProperty: if (what < propertyCount()) {
             const QStaticMetaProperty prop = property(what);
             Qt26Private::expand_at<annotationCount()>(prop.m_index, [&](auto Idx){
                 constexpr auto metaData = metaObjectAnnotation(Idx);
                 if constexpr (metaData.m_metaEntity == Qt26::MetaEntity::Property) {
-                    if (call == Call::GetProperty) {
+                    if (call == QMetaObject::ReadProperty) {
                         constexpr auto member = memberFunction(metaData.m_getter);
                         if constexpr (member)
                             *static_cast<QVariant *>(args[0]) = object->[:*member:]();
@@ -802,7 +850,7 @@ public:
         return what;
     }
 
-    static void activate(Class *that, std::size_t index, void **args)
+    static void activate(Class *that, int index, void **args)
     {
         if (index >= 0) {
             std::string_view name = method(index).m_name;
@@ -842,7 +890,104 @@ public:
         QStaticMetaObject::method = &QStaticMetaObjectImpl::method;
         QStaticMetaObject::indexOfMethod = &QStaticMetaObjectImpl::indexOfMethod;
 
-        QStaticMetaObject::meta_call = &QStaticMetaObjectImpl::meta_call;
+        QStaticMetaObject::static_metacall = &QStaticMetaObjectImpl::static_metacall;
+    }
+
+private:
+    struct Sizes
+    {
+        std::size_t strings = 0;
+        std::size_t data = 16;
+        std::size_t relatedMetaObjects = 0;
+        std::size_t metaTypes = 0;
+        std::size_t extradata = 0;
+    };
+
+    static constexpr Sizes sizes()
+    {
+        Sizes sizes;
+        sizes.strings += className().size() + 1;
+        for (auto base : bases())
+            sizes.strings += base.size() + 1;
+        for (auto property : properties())
+            sizes.strings += property.size();
+        for (auto enumerator : enumerators())
+            sizes.strings += enumerator.size();
+        for (auto classInfo : classInfos())
+            sizes.strings += classInfo.size();
+        for (auto method : methods())
+            sizes.strings += method.size();
+        return sizes;
+    }
+
+    template <typename Array>
+    static constexpr std::size_t addInt(Array &array, std::size_t index, uint value)
+    {
+        array[index] = value;
+        return index + 1;
+    };
+
+    template <typename Array>
+    static constexpr std::size_t addString(Array &array, std::size_t index, std::string_view str)
+    {
+        // start of string = two ints past head
+        index = addInt(array, index, index + 2*sizeof(int));
+        index = addInt(array, index, str.size());
+
+        // string with constexpr compliant 4*char -> uint conversion
+        char offset = 0;
+        for (const uint ch : str) {
+            array[index] |= (ch << CHAR_BIT * offset);
+            if (++offset == sizeof(int)) {
+                offset = 0;
+                ++index;
+            }
+        }
+        if (offset)
+            ++index;
+        return index;
+    };
+
+    static constexpr Sizes dataSizes = sizes();
+
+    static constexpr auto makeStringData() {
+        std::array<uint, dataSizes.strings> stringData = {};
+        std::size_t index = 0;
+        index = addString(stringData, index, className());
+        return stringData;
+    }
+    static constexpr auto stringData = makeStringData();
+    static constexpr std::array<uint, dataSizes.data> intData {
+        QtMocConstants::OutputRevision,
+        0, // className
+        0, // classInfoCount
+        0, // classInfoData
+        0, // methodCount
+        0, // methodData
+        0, // propertyCount
+        0, // propertyData
+        0, // enumeratorCount
+        0, // enumeratorData
+        0, // constructorCount
+        0, // constructorData
+        0, // flags
+        0, // signalCount
+        0, // metaObjectHashIndex
+    };
+
+public:
+    static constexpr auto finalize()
+    {
+        // Rest is left as an exercise for the reader.
+        // This is PoC that we can construct the data at compile time,
+        // and only have to assemble the QMetaObject::Data object at initialization
+        // time.
+
+        return QMetaObject::Data{
+            {}, // Super
+            stringData.data(),
+            intData.data()
+        };
     }
 };
 
@@ -855,19 +1000,21 @@ constexpr auto QStaticMetaObject::fromType()
 }
 
 #define Q26_OBJECT_STATICS \
-    static Qt26::QStaticMetaObject staticMetaObject; \
+    static Qt26::QStaticMetaObject staticQ26MetaObject; \
+    static QMetaObject staticMetaObject; \
     struct QStaticMetaObjectData;
 
 #define Q26_OBJECT \
 public: \
-    const Qt26::QStaticMetaObject *metaObject() const override { \
-        return &staticMetaObject; \
-    } \
+    const Qt26::QStaticMetaObject *q26MetaObject() const override { return &staticQ26MetaObject; } \
+    const QMetaObject *metaObject() const override { return &staticMetaObject; } \
     Q26_OBJECT_STATICS \
+    QT_META_OBJECT_VARS \
 private:
 
 #define Q26_OBJECT_IMPL(Class) \
-    Qt26::QStaticMetaObject Class::staticMetaObject = Qt26::QStaticMetaObject::fromType<Class>();
+    Qt26::QStaticMetaObject Class::staticQ26MetaObject = Qt26::QStaticMetaObject::fromType<Class>(); \
+    QMetaObject Class::staticMetaObject = { Qt26::QStaticMetaObjectImpl<Class>::finalize() };
 
 #define Q26_PROPERTY(Declaration) \
 public: \

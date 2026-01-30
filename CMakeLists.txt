@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(cpp26metaobject VERSION 0.1 LANGUAGES CXX)
 
 find_package(Qt6 COMPONENTS
-    Core Gui Widgets
+    Core Gui Widgets CorePrivate
     REQUIRED
 )
 
@@ -28,6 +28,7 @@ target_compile_options(cpp26metaobject PRIVATE -fsanitize=address)
 target_link_options(cpp26metaobject PRIVATE -fsanitize=address)
 
 target_link_libraries(cpp26metaobject PRIVATE
+    Qt6::CorePrivate
     Qt6::Widgets
     )
 

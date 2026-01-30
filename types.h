@@ -12,7 +12,9 @@ public:
     Object() = default;
     virtual ~Object() = default;
 
-    virtual const Qt26::QStaticMetaObject *metaObject() const;
+    virtual const Qt26::QStaticMetaObject *q26MetaObject() const;
+    virtual const QMetaObject *metaObject() const;
+    virtual int qt_metacall(QMetaObject::Call, int, void **);
 
     QVariant property(std::string_view name) const;
     bool setProperty(std::string_view name, const QVariant &value);
