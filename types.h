@@ -16,6 +16,15 @@ public:
     virtual const QMetaObject *metaObject() const;
     virtual int qt_metacall(QMetaObject::Call, int, void **);
 
+    QString objectName() const
+    {
+        return m_objectName;
+    }
+    void setObjectName(const QString &objectName)
+    {
+        m_objectName = objectName;
+    }
+
     QVariant property(std::string_view name) const;
     bool setProperty(std::string_view name, const QVariant &value);
 
@@ -35,6 +44,8 @@ public:
     Q26_SIGNAL void destroyed();
 
 private:
+    QString m_objectName;
+
     Q_DISABLE_COPY_MOVE(Object);
     void connectImpl(std::string_view, QtPrivate::SlotObjUniquePtr slotObject);
 };
@@ -47,10 +58,6 @@ struct User : virtual public Object
 
     Q26_CLASSINFO("DefaultProperty", "name")
 public:
-    explicit User()
-        : m_name("default from c'tor")
-    {}
-
     enum class Modes {
         Default,
         Value1,
@@ -118,7 +125,7 @@ public:
     Q26_SIGNAL void numberChanged();
 
 private:
-    double m_number;
+    double m_number = 3.1415;
 };
 
 

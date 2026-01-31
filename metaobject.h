@@ -3,6 +3,7 @@
 #include <string>
 #include <meta>
 #include <ranges>
+#include <unordered_set>
 #include <utility>
 
 #include <QtCore/qdebug.h>
@@ -523,7 +524,7 @@ protected:
 template <typename Class>
 struct QStaticMetaObjectImpl : QStaticMetaObject
 {
-private:
+public:
     friend Class;
 
     static consteval std::optional<std::meta::info> memberFunction(std::string_view name)
@@ -551,16 +552,46 @@ private:
         return result;
     }
 
+public:
+    static consteval void getUniqueBases(std::vector<std::meta::info> &bases)
+    {
+        [:Qt26Private::expand(bases_of(^^Class, std::meta::access_context::current())):]
+        >> [&]<auto base> {
+            constexpr auto baseType = type_of(base);
+            if (!is_virtual_base_of_type(baseType, ^^Class)) {
+                bases.insert(bases.begin(), baseType);
+            } else {
+                auto match = std::find(bases.begin(), bases.end(), baseType);
+                if (match == bases.end())
+                    bases.insert(bases.begin(), baseType);
+                else if (match != bases.begin())
+                    std::rotate(bases.begin(), match, match + 1);
+            }
+            using Base = [:baseType:];
+            using BaseMO = Qt26::QStaticMetaObjectImpl<Base>;
+            BaseMO::getUniqueBases(bases);
+        };
+    }
+
+    static consteval auto uniqueBases()
+    {
+        std::vector<std::meta::info> bases;
+        getUniqueBases(bases);
+        // std::reverse(bases.begin(), bases.end());
+        return std::define_static_array(bases);
+    }
+
     template <typename Fn>
     static constexpr auto withBases(Fn &&fn)
     {
         bool cont = true;
-        [:Qt26Private::expand(bases_of(^^Class, std::meta::access_context::current())):]
+        [:Qt26Private::expand(uniqueBases()):]
         >> [&]<auto base> {
-            using Base = [:type_of(base):];
+            using Base = [:base:];
             using BaseMO = Qt26::QStaticMetaObjectImpl<Base>;
             cont = cont && (std::forward<Fn>(fn).template operator()<BaseMO>(), true);
         };
+        return cont;
     }
 
 public:
@@ -572,31 +603,44 @@ public:
     static constexpr std::vector<std::string_view> bases()
     {
         std::vector<std::string_view> result;
-        withBases([&result]<typename BaseMO>{
+        [:Qt26Private::expand(bases_of(^^Class, std::meta::access_context::current())):]
+        >> [&result]<auto base>{
+            using Base = [:type_of(base):];
+            using BaseMO = Qt26::QStaticMetaObjectImpl<Base>;
             result.push_back(BaseMO::className());
-        });
+        };
 
+        return result;
+    }
+
+    static constexpr std::vector<QStaticMetaProperty> directProperties()
+    {
+        std::vector<QStaticMetaProperty> result;
+        Qt26Private::expand_while<annotationCount()>([&](auto idx){
+            constexpr auto data = metaObjectAnnotation(idx);
+            if constexpr (data.m_metaEntity == Qt26::MetaEntity::Property)
+                result.push_back(data);
+        });
         return result;
     }
 
     static constexpr std::vector<QStaticMetaProperty> properties()
     {
         std::vector<QStaticMetaProperty> result;
-        withBases([&result]<typename BaseMO>{ result.append_range(BaseMO::properties()); });
-
-        Qt26Private::expand_while<annotationCount()>([&](auto idx){
-            constexpr auto data = metaObjectAnnotation(idx);
-            if constexpr (data.m_metaEntity == Qt26::MetaEntity::Property)
-                result.push_back(data);
+        withBases([&result]<typename BaseMO>{
+            result.append_range(BaseMO::directProperties());
         });
 
+        result.append_range(directProperties());
         return result;
     }
 
     static constexpr int propertyOffset()
     {
         int offset = 0;
-        withBases([&offset]<typename BaseMO>{ offset += BaseMO::propertyCount(); });
+        withBases([&offset]<typename BaseMO>{
+            offset += BaseMO::directProperties().size();
+        });
         return offset;
     }
 
@@ -618,27 +662,39 @@ public:
 
     static constexpr QStaticMetaProperty property(int idx)
     {
+        if (idx < 0 || idx >= propertyCount())
+            return {};
         return properties().at(idx);
     }
 
-    static constexpr std::vector<QStaticMetaEnum> enumerators()
+    static constexpr std::vector<QStaticMetaEnum> directEnumerators()
     {
         std::vector<QStaticMetaEnum> result;
-        withBases([&result]<typename BaseMO>{ result.append_range(BaseMO::enumerators()); });
-
         Qt26Private::expand_while<annotationCount()>([&result](auto idx) {
             constexpr auto data = metaObjectAnnotation(idx);
             if constexpr (data.m_metaEntity == Qt26::MetaEntity::Enumerator)
                 result.push_back(data);
         });
+        return result;
+    }
 
+    static constexpr std::vector<QStaticMetaEnum> enumerators()
+    {
+        std::vector<QStaticMetaEnum> result;
+        withBases([&result]<typename BaseMO>{
+            result.append_range(BaseMO::directEnumerators());
+        });
+
+        result.append_range(directEnumerators());
         return result;
     }
 
     static constexpr int enumeratorOffset()
     {
         int offset = 0;
-        withBases([&offset]<typename BaseMO>{ offset += BaseMO::enumeratorCount(); });
+        withBases([&offset]<typename BaseMO>{
+            offset += BaseMO::directEnumerators().size();
+        });
         return offset;
     }
 
@@ -664,16 +720,25 @@ public:
         return enumerators().at(idx);
     }
 
-    static constexpr std::vector<QStaticMetaClassInfo> classInfos()
+    static constexpr std::vector<QStaticMetaClassInfo> directClassInfos()
     {
         std::vector<QStaticMetaClassInfo> result;
-        withBases([&result]<typename BaseMO>{ result.append_range(BaseMO::classInfos()); });
-
         Qt26Private::expand_while<annotationCount()>([&result](auto idx) {
             constexpr auto data = metaObjectAnnotation(idx);
             if constexpr (data.m_metaEntity == Qt26::MetaEntity::ClassInfo)
                 result.push_back(data);
         });
+        return result;
+    }
+
+    static constexpr std::vector<QStaticMetaClassInfo> classInfos()
+    {
+        std::vector<QStaticMetaClassInfo> result;
+        withBases([&result]<typename BaseMO>{
+            result.append_range(BaseMO::directClassInfos());
+        });
+
+        result.append_range(directClassInfos());
 
         return result;
     }
@@ -681,7 +746,9 @@ public:
     static constexpr int classInfoOffset()
     {
         int offset = 0;
-        withBases([&offset]<typename BaseMO>{ offset += BaseMO::classInfoCount(); });
+        withBases([&offset]<typename BaseMO>{
+            offset += BaseMO::directClassInfos().size();
+        });
         return offset;
     }
 
@@ -707,11 +774,9 @@ public:
         return classInfos().at(idx);
     }
 
-    static constexpr std::vector<QStaticMetaMethod> methods()
+    static constexpr std::vector<QStaticMetaMethod> directMethods()
     {
         std::vector<QStaticMetaMethod> result;
-        withBases([&result]<typename BaseMO>{ result.append_range(BaseMO::methods()); });
-
         [:Qt26Private::expand(members_of(^^Class, std::meta::access_context::current())):] >>
             [&result]<auto member> {
             if constexpr (is_function(member) && has_identifier(member)) {
@@ -735,6 +800,17 @@ public:
             }
             return false;
         };
+        return result;
+    }
+
+    static constexpr std::vector<QStaticMetaMethod> methods()
+    {
+        std::vector<QStaticMetaMethod> result;
+        withBases([&result]<typename BaseMO>{
+            result.append_range(BaseMO::directMethods());
+        });
+
+        result.append_range(directMethods());
 
         return result;
     }
@@ -742,7 +818,9 @@ public:
     static constexpr int methodOffset()
     {
         int offset = 0;
-        withBases([&offset]<typename BaseMO>{ offset += BaseMO::methodCount(); });
+        withBases([&offset]<typename BaseMO>{
+            offset += BaseMO::directMethods().size();
+        });
         return offset;
     }
 
@@ -803,17 +881,8 @@ public:
         return -1;
     }
 
-    static constexpr int static_metacall(Object *o, QMetaObject::Call call, int what, void **args)
+    static constexpr int direct_static_metacall(Object *o, QMetaObject::Call call, int what, void **args)
     {
-        if (what < 0)
-            return what;
-
-        withBases([&]<typename BaseMO>{
-            what = BaseMO::static_metacall(o, call, what, args);
-            return what >= 0;
-        });
-        if (what < 0)
-            return what;
         Class *object = nullptr;
         if constexpr (is_virtual_base_of_type(^^Object, ^^Class))
             object = dynamic_cast<Class *>(o);
@@ -821,40 +890,54 @@ public:
             object = static_cast<Class *>(o);
         switch (call) {
         case QMetaObject::ReadProperty:
-        case QMetaObject::WriteProperty: if (what < propertyCount()) {
-            const QStaticMetaProperty prop = property(what);
-            Qt26Private::expand_at<annotationCount()>(prop.m_index, [&](auto Idx){
-                constexpr auto metaData = metaObjectAnnotation(Idx);
-                if constexpr (metaData.m_metaEntity == Qt26::MetaEntity::Property) {
-                    if (call == QMetaObject::ReadProperty) {
-                        constexpr auto member = memberFunction(metaData.m_getter);
-                        if constexpr (member)
-                            *static_cast<QVariant *>(args[0]) = object->[:*member:]();
-                    } else {
-                        constexpr auto member = memberFunction(metaData.m_setter);
-                        if constexpr (member && parameters_of(*member).size() == 1) {
-                            const QVariant &value = *static_cast<QVariant *>(args[1]);
-                            constexpr auto parameter = parameters_of(*member).at(0);
-                            using paramType = std::remove_cvref_t<decltype([:parameter:])>;
-                            if (value.canConvert<paramType>()) {
-                                object->[:*member:](value.value<paramType>());
+        case QMetaObject::WriteProperty:
+            if (what < directProperties().size()) {
+                const QStaticMetaProperty prop = directProperties().at(what);
+                Qt26Private::expand_at<annotationCount()>(prop.m_index, [&](auto Idx){
+                    constexpr auto metaData = metaObjectAnnotation(Idx);
+                    if constexpr (metaData.m_metaEntity == Qt26::MetaEntity::Property) {
+                        if (call == QMetaObject::ReadProperty) {
+                            constexpr auto member = memberFunction(metaData.m_getter);
+                            if constexpr (member)
+                                *static_cast<QVariant *>(args[0]) = object->[:*member:]();
+                        } else {
+                            constexpr auto member = memberFunction(metaData.m_setter);
+                            if constexpr (member && parameters_of(*member).size() == 1) {
+                                const QVariant &value = *static_cast<QVariant *>(args[1]);
+                                constexpr auto parameter = parameters_of(*member).at(0);
+                                using paramType = std::remove_cvref_t<decltype([:parameter:])>;
+                                if (value.canConvert<paramType>()) {
+                                    object->[:*member:](value.value<paramType>());
+                                }
                             }
                         }
                     }
-                }
-            });
-            what -= (propertyCount() - propertyOffset());
-            break;
+                });
             }
+            what -= directProperties().size();
+            break;
         }
         return what;
+    }
+
+    static constexpr int static_metacall(Object *o, QMetaObject::Call call, int what, void **args)
+    {
+        if (what < 0)
+            return what;
+        withBases([&]<typename BaseMO>{
+            what = BaseMO::direct_static_metacall(o, call, what, args);
+            return what >= 0;
+        });
+        if (what < 0)
+            return what;
+
+        return direct_static_metacall(o, call, what, args);
     }
 
     static void activate(Class *that, int index, void **args)
     {
         if (index >= 0) {
             std::string_view name = method(index).m_name;
-            qDebug() << "activating signal" << index << name;
             for (const auto &function : that->connections[name]) {
                 function->call(nullptr, args);
             }
@@ -1008,11 +1091,24 @@ constexpr auto QStaticMetaObject::fromType()
 public: \
     const Qt26::QStaticMetaObject *q26MetaObject() const override { return &staticQ26MetaObject; } \
     const QMetaObject *metaObject() const override { return &staticMetaObject; } \
+    int qt_metacall(QMetaObject::Call, int, void **) override; \
     Q26_OBJECT_STATICS \
     QT_META_OBJECT_VARS \
 private:
 
 #define Q26_OBJECT_IMPL(Class) \
+    Qt26::QStaticMetaObject Class::staticQ26MetaObject = Qt26::QStaticMetaObject::fromType<Class>(); \
+    QMetaObject Class::staticMetaObject = { Qt26::QStaticMetaObjectImpl<Class>::finalize() }; \
+    int Class::qt_metacall(QMetaObject::Call call, int what, void **args) \
+    { return Qt26::QStaticMetaObjectImpl<Class>::static_metacall(this, call, what, args); }
+
+#define Q26_GADGET \
+public: \
+    Q26_OBJECT_STATICS \
+    QT_META_OBJECT_VARS \
+private:
+
+#define Q26_GADGET_IMPL(Class) \
     Qt26::QStaticMetaObject Class::staticQ26MetaObject = Qt26::QStaticMetaObject::fromType<Class>(); \
     QMetaObject Class::staticMetaObject = { Qt26::QStaticMetaObjectImpl<Class>::finalize() };
 

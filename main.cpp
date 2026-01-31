@@ -79,6 +79,7 @@ void print(const MetaObject &mo)
 int main()
 {
     UserWithNumber user;
+    user.setObjectName("User with number");
     Object *userAsObject = &user;
     auto *q26MetaObject = userAsObject->q26MetaObject();
 
@@ -99,18 +100,24 @@ int main()
         qDebug() << "Slot with args" << x << y;
     });
 
+    qDebug() << "user.objectName =" << user.property("objectName");
     qDebug() << "user.value = " << user.property("value");
     user.setValue(26);
 
     qDebug() << "user.name = " << user.property("name");
     user.setProperty("name", QString("new value for name"));
-    qDebug() << "user.name = " << user.property("name");
-    qDebug();
+    qDebug() << "user.number = " << user.property("number");
 
     user.signalWithArgs(42, 3.14159);
 
     { // this works if we get the q26MetaObject statically
         constexpr auto staticMetaObject = Qt26::QStaticMetaObject::fromType<decltype(user)>();
+
+        constexpr auto bases = Qt26::QStaticMetaObjectImpl<decltype(user)>::uniqueBases();
+        [:Qt26Private::expand(bases):] >> []<auto base> {
+            qDebug() << identifier_of(base);
+        };
+
         constexpr auto propertyCount = staticMetaObject.propertyCount();
         constexpr auto firstProperty = staticMetaObject.property(0);
         constexpr auto signalCount = staticMetaObject.signalCount();

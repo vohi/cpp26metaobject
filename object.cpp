@@ -16,11 +16,6 @@ const QMetaObject *Object::metaObject() const
     return &staticMetaObject;
 }
 
-int Object::qt_metacall(QMetaObject::Call call, int what, void **args)
-{
-    return what;
-}
-
 QVariant Object::property(std::string_view name) const
 {
     std::size_t index = q26MetaObject()->indexOfProperty(name);
