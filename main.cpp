@@ -90,6 +90,7 @@ int main()
     print(Qt26::QStaticMetaObject::fromType<decltype(user)>());
 
     qDebug() << Qt::endl << "Signal test";
+    qDebug() << "Name of valueChanged signal: " << Qt26::signalName(&User::valueChanged);
     user.connect(&User::nameChanged, [&user]{
         qDebug() << "nameChanged to" << user.name();
     });

@@ -123,6 +123,19 @@ namespace Qt26 {
         using Class = C;
     };
 
+
+    template <typename LHS, typename RHS>
+        requires requires (LHS lhs, RHS rhs) {
+            lhs == rhs;
+        }
+    constexpr auto isSameFunction(LHS &&lhs, RHS &&rhs)
+    {
+        return lhs == rhs;
+    }
+
+    template <typename LHS, typename RHS>
+    auto isSameFunction(LHS &&lhs, RHS &&rhs) { return false; }
+
     template <typename Signal>
     static std::string_view signalName(Signal &&signal)
     {
@@ -133,12 +146,10 @@ namespace Qt26 {
             constexpr auto member = members_of(^^Class, std::meta::access_context::current()).at(I);
             if constexpr (is_function(member) && has_identifier(member)
                        && !is_function_template(member) && !is_special_member_function(member)) {
-                using MFP = [:type_of(member):];
-                if constexpr (std::is_same_v<MFP *, Signal>) {
-                    if (extract<MFP*>(member) == signal) {
-                        result = identifier_of(member);
-                        return false;
-                    }
+                constexpr auto mfp = &[:member:];
+                if (isSameFunction(mfp, signal)) {
+                    result = identifier_of(member);
+                    return false;
                 }
             }
             return true;
