@@ -91,6 +91,7 @@ int main()
 
     qDebug() << Qt::endl << "Signal test";
     qDebug() << "Name of valueChanged signal: " << Qt26::signalName(&User::valueChanged);
+    qDebug() << "Name of callMe method: " << Qt26::signalName(&User::callMe);
     user.connect(&User::nameChanged, [&user]{
         qDebug() << "nameChanged to" << user.name();
     });
@@ -110,6 +111,10 @@ int main()
     qDebug() << "user.number = " << user.property("number");
 
     user.signalWithArgs(42, 3.14159);
+
+    user.invokeMethod("callMe");
+    user.invokeMethod("callMeWithNumber", 42);
+    user.invokeMethod("callMeWithText", QString("abc"));
 
     { // this works if we get the q26MetaObject statically
         constexpr auto staticMetaObject = Qt26::QStaticMetaObject::fromType<decltype(user)>();

@@ -43,6 +43,17 @@ public:
 
     Q26_SIGNAL void destroyed();
 
+    template <typename ...Args>
+    auto invokeMethod(std::string_view name, Args &&...args)
+    {
+        const int index = q26MetaObject()->indexOfMethod(name);
+        void *a[] = {
+            nullptr,
+            const_cast<void *>(reinterpret_cast<const volatile void *>(std::addressof(args)))...
+        };
+        qt_metacall(QMetaObject::InvokeMetaMethod, index, a);
+    }
+
 private:
     QString m_objectName;
 
@@ -100,6 +111,21 @@ public:
     Q26_SIGNAL void valueChanged();
 
     Q26_SIGNAL void signalWithArgs(int x, double y);
+
+    Q26_INVOKABLE void callMe()
+    {
+        qDebug()<< "Thanks for nothing";
+    }
+
+    Q26_INVOKABLE void callMeWithNumber(int number)
+    {
+        qDebug()<< "Thanks for the money" << number;
+    }
+
+    Q26_INVOKABLE void callMeWithText(const QString &text)
+    {
+        qDebug()<< "Thanks for the message" << text;
+    }
 
 public:
     QString m_name = "default";

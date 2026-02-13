@@ -60,6 +60,26 @@ namespace Qt26Private
         args.push_back(reflect_constant(r));
     return substitute(^^__impl::replicator, args);
     }
+
+    template <typename R>
+    consteval auto tuple_type(R range) {
+        std::vector<std::meta::info> args;
+        for (auto r : range)
+            args.push_back(type_of(r));
+        return substitute(^^std::tuple, args);
+    }
+
+    template <typename Tuple, std::size_t... Is>
+    auto make_tuple_impl(void **args, std::index_sequence<Is...>)
+    {
+        return std::make_tuple(*static_cast<std::remove_cvref_t<std::tuple_element_t<Is, Tuple>> *>(args[Is + 1])...);
+    }
+
+    template<typename Tuple>
+    auto make_tuple(void **args)
+    {
+        return make_tuple_impl<Tuple>(args, std::make_index_sequence<std::tuple_size_v<Tuple>>{});
+    }
 }
 
 namespace Qt26 {
@@ -788,8 +808,9 @@ public:
     static constexpr std::vector<QStaticMetaMethod> directMethods()
     {
         std::vector<QStaticMetaMethod> result;
+        int i = 0;
         [:Qt26Private::expand(members_of(^^Class, std::meta::access_context::current())):] >>
-            [&result]<auto member> {
+            [&result, &i]<auto member> {
             if constexpr (is_function(member) && has_identifier(member)) {
                 if constexpr (annotations_of_with_type(member, ^^Qt26::MetaEntity).size() == 1) {
                     constexpr Qt26::MetaEntity methodType = extract<Qt26::MetaEntity>(
@@ -800,6 +821,7 @@ public:
                         static_assert(return_type == ^^void,
                                       "Meta-methods with return type are not supported yet!");
                         QStaticMetaMethod method(methodType, identifier_of(member));
+                        method.m_index = i;
                         [:Qt26Private::expand(parameters_of(member)):] >> [&method]<auto parameter> {
                             using type = [:type_of(parameter):];
                             method.m_parameters.push_back({QMetaType::fromType<type>(),
@@ -809,6 +831,7 @@ public:
                     }
                 }
             }
+            ++i;
             return false;
         };
         return result;
@@ -926,6 +949,23 @@ public:
                 });
             }
             what -= directProperties().size();
+            break;
+        case QMetaObject::InvokeMetaMethod:
+            if (what < directMethods().size()) {
+                const QStaticMetaMethod method = directMethods().at(what);
+                Qt26Private::expand_at<members_of(^^Class, std::meta::access_context::current()).size()>(method.m_index, [&](auto Idx){
+                    constexpr auto member = members_of(^^Class, std::meta::access_context::current()).at(Idx);
+                    if constexpr (is_function(member)
+                               && annotations_of_with_type(member, ^^Qt26::MetaEntity).size() == 1) {
+                        using ArgTuple = [:Qt26Private::tuple_type(parameters_of(member)):];
+                        auto callargs = Qt26Private::make_tuple<ArgTuple>(args);
+                        std::apply([object](auto &&...a) {
+                            object->[:member:](a...);
+                        }, callargs);
+                    }
+                });
+            }
+            what -= directMethods().size();
             break;
         }
         return what;
@@ -1135,6 +1175,8 @@ public: \
 private:
 
 #define Q26_SIGNAL [[=Qt26::MetaEntity::Signal]]
+
+#define Q26_INVOKABLE [[=Qt26::MetaEntity::Method]]
 
 #define Q26_SIGNAL_INLINE_IMPL {                                    \
     using That = std::remove_pointer_t<decltype(this)>;             \
