@@ -115,6 +115,9 @@ int main()
     user.invokeMethod("callMe");
     user.invokeMethod("callMeWithNumber", 42);
     user.invokeMethod("callMeWithText", QString("abc"));
+    QString screwed = "abc";
+    user.invokeMethod("callMeWithTextRef", screwed);
+    qDebug() << screwed;
 
     { // this works if we get the q26MetaObject statically
         constexpr auto staticMetaObject = Qt26::QStaticMetaObject::fromType<decltype(user)>();

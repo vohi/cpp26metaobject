@@ -127,6 +127,12 @@ public:
         qDebug()<< "Thanks for the message" << text;
     }
 
+    Q26_INVOKABLE void callMeWithTextRef(QString &text)
+    {
+        qDebug()<< "Updating message" << text;
+        text = "Screwed";
+    }
+
 public:
     QString m_name = "default";
     int m_value = 42;

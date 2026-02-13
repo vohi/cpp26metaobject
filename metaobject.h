@@ -72,7 +72,7 @@ namespace Qt26Private
     template <typename Tuple, std::size_t... Is>
     auto make_tuple_impl(void **args, std::index_sequence<Is...>)
     {
-        return std::make_tuple(*static_cast<std::remove_cvref_t<std::tuple_element_t<Is, Tuple>> *>(args[Is + 1])...);
+        return std::make_tuple(std::ref(*static_cast<std::remove_cvref_t<std::tuple_element_t<Is, Tuple>> *>(args[Is + 1]))...);
     }
 
     template<typename Tuple>
@@ -824,7 +824,7 @@ public:
                         method.m_index = i;
                         [:Qt26Private::expand(parameters_of(member)):] >> [&method]<auto parameter> {
                             using type = [:type_of(parameter):];
-                            method.m_parameters.push_back({QMetaType::fromType<type>(),
+                            method.m_parameters.push_back({QMetaType::fromType<std::remove_cvref_t<type>>(),
                                                            identifier_of(parameter)});
                         };
                         result.push_back(method);
