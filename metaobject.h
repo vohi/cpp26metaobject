@@ -568,6 +568,22 @@ public:
         return std::nullopt;
     }
 
+    template <std::meta::info needle, Qt26::MetaEntity entity>
+    static consteval std::size_t indexOfMemberWithType()
+    {
+        std::size_t index = methodOffset();
+        for (auto member : members_of(^^Class, std::meta::access_context::current())) {
+            if (has_identifier(member) && is_function(member)) {
+                auto annotations = annotations_of_with_type(member, ^^Qt26::MetaEntity);
+                if (annotations.size() > 0 && extract<Qt26::MetaEntity>(annotations.at(0)) == entity) {
+                    if (member == needle)
+                        return index;
+                    ++index;
+                }
+            }
+        }
+    }
+
     static consteval std::size_t annotationCount()
     {
         using MetaObject = Class::QStaticMetaObjectData;
@@ -1179,16 +1195,16 @@ private:
 #define Q26_INVOKABLE [[=Qt26::MetaEntity::Method]]
 
 #define Q26_SIGNAL_INLINE_IMPL {                                    \
-    using That = std::remove_pointer_t<decltype(this)>;             \
+    struct qt_signal_struct {};                                     \
+    constexpr auto qt_signal = parent_of(^^qt_signal_struct);       \
+    using That = [:parent_of(qt_signal):];                          \
     using ThatMO = Qt26::QStaticMetaObjectImpl<That>;               \
-    constexpr std::string_view signal_name = __FUNCTION__;          \
-    constexpr auto index = ThatMO::indexOfMethod(signal_name);      \
-    constexpr auto member = *ThatMO::memberFunction(signal_name);   \
-    using ReturnType = [:return_type_of(member):];                  \
-    constexpr auto pCount = parameters_of(member).size();           \
+    constexpr auto index = ThatMO::indexOfMemberWithType<qt_signal, Qt26::MetaEntity::Signal>(); \
+    using ReturnType = [:return_type_of(qt_signal):];               \
+    constexpr auto pCount = parameters_of(qt_signal).size();        \
                                                                     \
     QStaticMetaMethod::SignalArgs<pCount, ReturnType> args;         \
-    [:Qt26Private::expand(parameters_of(member)):] >>               \
+    [:Qt26Private::expand(parameters_of(qt_signal)):] >>            \
     [&, i = 0]<auto param>() mutable {                              \
         args.m_args[++i] = &[:param:];                              \
     };                                                              \

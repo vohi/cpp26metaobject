@@ -7,18 +7,18 @@ Q26_SIGNAL_IMPL(void User::valueChanged())
 
 void User::signalWithArgs(int x, double y)
 {
-    using That = std::remove_pointer_t<decltype(this)>;
+    struct qt_signal_struct {};
+    constexpr auto qt_signal = parent_of(^^qt_signal_struct);
+    using That = [:parent_of(qt_signal):];
     using ThatMO = Qt26::QStaticMetaObjectImpl<That>;
-    constexpr std::string_view signal_name = __FUNCTION__;
-    constexpr auto index = ThatMO::indexOfMethod(signal_name);
+    constexpr auto index = ThatMO::indexOfMemberWithType<qt_signal, Qt26::MetaEntity::Signal>();
 
-    constexpr auto member = *ThatMO::memberFunction(signal_name);
-    using ReturnType = [:return_type_of(member):];
-    constexpr auto pCount = parameters_of(member).size();
+    using ReturnType = [:return_type_of(qt_signal):];
+    constexpr auto pCount = parameters_of(qt_signal).size();
 
     QStaticMetaMethod::SignalArgs<pCount, ReturnType> args;
 
-    [:Qt26Private::expand(parameters_of(member)):] >>
+    [:Qt26Private::expand(parameters_of(qt_signal)):] >>
     [&, i = 0]<auto param>() mutable {
         // args.m_args[++i] = &[:param:];
         ++i;
