@@ -1,4 +1,4 @@
-#include "types.h"
+#include "object.h"
 
 #include <QtCore/qobjectdefs.h>
 #include <QtCore/qvariant.h>

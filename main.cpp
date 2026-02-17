@@ -1,7 +1,7 @@
 #include <QtCore>
 
 #include <QtCore/private/qmetaobject_p.h>
-#include "types.h"
+#include "user.h"
 
 QDebug operator<<(QDebug dbg, const QMetaProperty &that)
 {

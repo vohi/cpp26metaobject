@@ -1,4 +1,4 @@
-#include "types.h"
+#include "user.h"
 
 Q26_OBJECT_IMPL(User)
 
