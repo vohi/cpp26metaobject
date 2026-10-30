@@ -2,6 +2,7 @@
 
 #include <QtCore/private/qmetaobject_p.h>
 #include "user.h"
+#include "generic.h"
 
 QDebug operator<<(QDebug dbg, const QMetaProperty &that)
 {
@@ -83,7 +84,7 @@ int main()
     Object *userAsObject = &user;
     auto *q26MetaObject = userAsObject->q26MetaObject();
 
-    print (*user.Object::q26MetaObject());
+    print(*user.Object::q26MetaObject());
 
     print(*q26MetaObject);
     print(*userAsObject->metaObject());
@@ -91,7 +92,7 @@ int main()
 
     qDebug() << Qt::endl << "Signal test";
     qDebug() << "Name of valueChanged signal: " << Qt26::signalName(&User::valueChanged);
-    qDebug() << "Name of callMe method: " << Qt26::signalName(&User::callMe);
+    // qDebug() << "Name of callMe method: " << Qt26::signalName(&User::callMe);
     user.connect(&User::nameChanged, [&user]{
         qDebug() << "nameChanged to" << user.name();
     });
@@ -113,11 +114,16 @@ int main()
     user.signalWithArgs(42, 3.14159);
 
     user.invokeMethod("callMe");
+    user.invokeMethod("callMe", 5);
     user.invokeMethod("callMeWithNumber", 42);
     user.invokeMethod("callMeWithText", QString("abc"));
     QString screwed = "abc";
     user.invokeMethod("callMeWithTextRef", screwed);
     qDebug() << screwed;
+
+    Generic<int> generic;
+    qDebug() << "Generic class:" << generic.q26MetaObject()->className();
+    print(*generic.q26MetaObject());
 
     { // this works if we get the q26MetaObject statically
         constexpr auto staticMetaObject = Qt26::QStaticMetaObject::fromType<decltype(user)>();

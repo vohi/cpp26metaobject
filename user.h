@@ -58,6 +58,11 @@ public:
         qDebug()<< "Thanks for nothing";
     }
 
+    Q26_INVOKABLE void callMe(int value)
+    {
+        qDebug()<< "Thanks for value" << value;
+    }
+
     Q26_INVOKABLE void callMeWithNumber(int number)
     {
         qDebug()<< "Thanks for the money" << number;

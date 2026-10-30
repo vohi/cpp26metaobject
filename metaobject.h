@@ -644,7 +644,10 @@ public:
 public:
     static constexpr std::string_view className()
     {
-        return identifier_of(^^Class);
+        if constexpr (has_identifier(^^Class))
+            return identifier_of(^^Class);
+        else
+            return display_string_of(^^Class);
     }
 
     static constexpr std::vector<std::string_view> bases()
@@ -886,10 +889,13 @@ public:
 
     static constexpr int indexOfMethod(std::string_view name)
     {
+        const bool fullPrototype = name.ends_with(')');
         int i = 0;
         for (const auto &method : methods()) {
-            if (method.m_name == name)
+            if (fullPrototype) {
+            } else if (method.m_name == name) {
                 return i;
+            }
             ++i;
         }
         return -1;
@@ -1174,6 +1180,15 @@ public: \
     Q26_OBJECT_STATICS \
     QT_META_OBJECT_VARS \
 private:
+
+#define Q26_OBJECT_INLINE \
+public: \
+    struct QStaticMetaObjectData; \
+    using Class = [:parent_of(^^QStaticMetaObjectData):]; \
+    static inline Qt26::QStaticMetaObject staticQ26MetaObject = Qt26::QStaticMetaObject::fromType<Class>(); \
+    const Qt26::QStaticMetaObject *q26MetaObject() const override { return &staticQ26MetaObject; } \
+    int qt_metacall(QMetaObject::Call call, int what, void **args) override \
+    { return Qt26::QStaticMetaObjectImpl<Class>::static_metacall(this, call, what, args); } \
 
 #define Q26_GADGET_IMPL(Class) \
     Qt26::QStaticMetaObject Class::staticQ26MetaObject = Qt26::QStaticMetaObject::fromType<Class>(); \
