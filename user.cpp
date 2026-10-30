@@ -7,8 +7,7 @@ Q26_SIGNAL_IMPL(void User::valueChanged())
 
 void User::signalWithArgs(int x, double y)
 {
-    struct qt_signal_struct {};
-    constexpr auto qt_signal = parent_of(^^qt_signal_struct);
+    constexpr auto qt_signal = std::meta::current_function();
     using That = [:parent_of(qt_signal):];
     using ThatMO = Qt26::QStaticMetaObjectImpl<That>;
     constexpr auto index = ThatMO::indexOfMemberWithType<qt_signal, Qt26::MetaEntity::Signal>();
