@@ -1195,8 +1195,7 @@ private:
 #define Q26_INVOKABLE [[=Qt26::MetaEntity::Method]]
 
 #define Q26_SIGNAL_INLINE_IMPL {                                    \
-    struct qt_signal_struct {};                                     \
-    constexpr auto qt_signal = parent_of(^^qt_signal_struct);       \
+    constexpr auto qt_signal = std::meta::current_function();         \
     using That = [:parent_of(qt_signal):];                          \
     using ThatMO = Qt26::QStaticMetaObjectImpl<That>;               \
     constexpr auto index = ThatMO::indexOfMemberWithType<qt_signal, Qt26::MetaEntity::Signal>(); \
@@ -1204,10 +1203,10 @@ private:
     constexpr auto pCount = parameters_of(qt_signal).size();        \
                                                                     \
     QStaticMetaMethod::SignalArgs<pCount, ReturnType> args;         \
-    [:Qt26Private::expand(parameters_of(qt_signal)):] >>            \
-    [&, i = 0]<auto param>() mutable {                              \
-        args.m_args[++i] = &[:param:];                              \
-    };                                                              \
+    std::size_t i = 0;                                              \
+    template for (constexpr auto e : std::define_static_array(parameters_of(qt_signal))) { \
+        args.m_args[++i] = &[:variable_of(e):];                     \
+    }                                                               \
     ThatMO::activate(this, index, args.m_args.data());              \
     return args.result();                                           \
 }
