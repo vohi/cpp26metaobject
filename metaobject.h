@@ -1,5 +1,6 @@
 #pragma once
 
+#include <span>
 #include <string>
 #include <meta>
 #include <ranges>
@@ -26,18 +27,6 @@ namespace Qt26Private
     static constexpr bool expand_at(std::size_t i, Fn &&fn)
     {
         return expand_at(i, std::forward<Fn>(fn), std::make_index_sequence<S>{});
-    }
-
-    template <typename Fn, std::size_t ...Is>
-    static constexpr void expand_while(Fn &&fn, std::index_sequence<Is...>)
-    {
-        ((std::forward<Fn>(fn)(std::integral_constant<size_t, Is>{}), true) && ...);
-    }
-
-    template <std::size_t S, typename Fn>
-    static constexpr void expand_while(Fn &&fn)
-    {
-        expand_while(std::forward<Fn>(fn), std::make_index_sequence<S>{});
     }
 
     template <typename R>
@@ -140,19 +129,17 @@ namespace Qt26 {
     {
         using Class = Prototype<std::remove_cvref_t<Signal>>::Class;
         std::string_view result;
-        constexpr auto count = members_of(^^Class, std::meta::access_context::current()).size();
-        Qt26Private::expand_while<count>([&](auto I){
-            constexpr auto member = members_of(^^Class, std::meta::access_context::current()).at(I);
+        template for (constexpr auto member
+                      : std::define_static_array(members_of(^^Class, std::meta::access_context::current()))) {
             if constexpr (is_function(member) && has_identifier(member)
                        && !is_function_template(member) && !is_special_member_function(member)) {
                 constexpr auto mfp = &[:member:];
                 if (isSameFunction(mfp, signal)) {
                     result = identifier_of(member);
-                    return false;
+                    break;
                 }
             }
-            return true;
-        });
+        }
         return result;
     }
 }
@@ -569,6 +556,11 @@ public:
         return annotations_of(^^ typename Class::QStaticMetaObjectData).size();
     }
 
+    static consteval std::span<const std::size_t> annotationIndices()
+    {
+        return std::define_static_array(std::views::iota(std::size_t(0), annotationCount()));
+    }
+
     static consteval auto metaObjectAnnotation(auto idx)
     {
         constexpr auto info = annotations_of(^^typename Class::QStaticMetaObjectData).at(idx);
@@ -643,11 +635,11 @@ public:
     static constexpr std::vector<QStaticMetaProperty> directProperties()
     {
         std::vector<QStaticMetaProperty> result;
-        Qt26Private::expand_while<annotationCount()>([&](auto idx){
-            constexpr auto data = metaObjectAnnotation(idx);
+        template for (constexpr std::size_t idx : annotationIndices()) {
+            constexpr auto data = metaObjectAnnotation(std::integral_constant<std::size_t, idx>{});
             if constexpr (data.m_metaEntity == Qt26::MetaEntity::Property)
                 result.push_back(data);
-        });
+        }
         return result;
     }
 
@@ -697,11 +689,11 @@ public:
     static constexpr std::vector<QStaticMetaEnum> directEnumerators()
     {
         std::vector<QStaticMetaEnum> result;
-        Qt26Private::expand_while<annotationCount()>([&result](auto idx) {
-            constexpr auto data = metaObjectAnnotation(idx);
+        template for (constexpr std::size_t idx : annotationIndices()) {
+            constexpr auto data = metaObjectAnnotation(std::integral_constant<std::size_t, idx>{});
             if constexpr (data.m_metaEntity == Qt26::MetaEntity::Enumerator)
                 result.push_back(data);
-        });
+        }
         return result;
     }
 
@@ -750,11 +742,11 @@ public:
     static constexpr std::vector<QStaticMetaClassInfo> directClassInfos()
     {
         std::vector<QStaticMetaClassInfo> result;
-        Qt26Private::expand_while<annotationCount()>([&result](auto idx) {
-            constexpr auto data = metaObjectAnnotation(idx);
+        template for (constexpr std::size_t idx : annotationIndices()) {
+            constexpr auto data = metaObjectAnnotation(std::integral_constant<std::size_t, idx>{});
             if constexpr (data.m_metaEntity == Qt26::MetaEntity::ClassInfo)
                 result.push_back(data);
-        });
+        }
         return result;
     }
 
