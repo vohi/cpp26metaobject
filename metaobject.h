@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <meta>
 #include <ranges>
@@ -47,6 +49,52 @@ namespace Qt26Private
     auto make_tuple(void **args)
     {
         return make_tuple_impl<Tuple>(args, std::make_index_sequence<std::tuple_size_v<Tuple>>{});
+    }
+
+    consteval bool isIdentifierChar(char c)
+    {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+            || c == '_';
+    }
+
+    consteval bool isSpace(char c)
+    {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    }
+
+    // Removes all whitespace that is not needed to separate identifiers,
+    // like moc's normalizeType().
+    consteval std::string normalizedType(std::string_view type)
+    {
+        std::string result;
+        for (std::size_t i = 0; i < type.size(); ++i) {
+            if (!isSpace(type[i])) {
+                result += type[i];
+                continue;
+            }
+            std::size_t next = i + 1;
+            while (next < type.size() && isSpace(type[next]))
+                ++next;
+            if (!result.empty() && isIdentifierChar(result.back())
+             && next < type.size() && isIdentifierChar(type[next])) {
+                result += ' ';
+            }
+            i = next - 1;
+        }
+        return result;
+    }
+
+    consteval int parseInt(std::string_view text)
+    {
+        if (text.empty())
+            throw std::invalid_argument("Expected an integer");
+        int result = 0;
+        for (char c : text) {
+            if (c < '0' || c > '9')
+                throw std::invalid_argument("Expected an integer");
+            result = result * 10 + (c - '0');
+        }
+        return result;
     }
 }
 
@@ -169,45 +217,118 @@ struct QStaticMetaData
 
 struct QStaticMetaProperty : QStaticMetaData
 {
+    // Parses "type name ATTRIBUTE value ... FLAG ..." following moc's Q_PROPERTY grammar
     consteval QStaticMetaProperty(std::string_view description = {})
         : QStaticMetaData(Qt26::MetaEntity::Property)
     {
-        std::size_t i = 0;
-        std::size_t sectionEnd = description.npos;
-        std::size_t section = 0;
-        do {
-            sectionEnd = description.find(' ', i);
-            auto text = description.substr(i, sectionEnd - i);
-            switch (section) {
-            case 0:
-                m_type = text;
-                break;
-            case 1:
-                m_name = text;
-                break;
-            case 2:
-                if (text != "READ")
-                    throw std::invalid_argument(text.data());
-                break;
-            case 3:
-                m_getter = text;
-                break;
-            case 4:
-                if (text != "WRITE")
-                    throw std::invalid_argument(text.data());
-            case 5:
-                m_setter = text;
-                break;
-            case 6:
-                if (text != "NOTIFY")
-                    throw std::invalid_argument(text.data());
-            case 7:
-                m_notify = text;
-                break;
+        std::vector<std::string_view> tokens;
+        for (std::size_t i = 0; i < description.size();) {
+            while (i < description.size() && Qt26Private::isSpace(description[i]))
+                ++i;
+            std::size_t end = i;
+            while (end < description.size() && !Qt26Private::isSpace(description[end]))
+                ++end;
+            if (end > i)
+                tokens.push_back(description.substr(i, end - i));
+            i = end;
+        }
+        if (tokens.empty())
+            return;
+
+        constexpr std::string_view keywords[] = {
+            "READ", "WRITE", "MEMBER", "RESET", "NOTIFY", "REVISION", "DESIGNABLE",
+            "SCRIPTABLE", "STORED", "USER", "BINDABLE", "CONSTANT", "FINAL",
+            "REQUIRED", "VIRTUAL", "OVERRIDE",
+        };
+        const auto isKeyword = [&keywords](std::string_view token) {
+            return std::ranges::find(keywords, token) != std::ranges::end(keywords)
+                || token.starts_with("REVISION(");
+        };
+
+        std::size_t k = 0;
+        while (k < tokens.size() && !isKeyword(tokens[k]))
+            ++k;
+        if (k < 2)
+            throw std::invalid_argument("Property declaration must start with type and name");
+
+        std::string type;
+        for (std::size_t i = 0; i < k - 1; ++i) {
+            if (i)
+                type += ' ';
+            type += tokens[i];
+        }
+        std::string_view name = tokens[k - 1];
+        while (name.starts_with('*') || name.starts_with('&')) {
+            type += name.front();
+            name.remove_prefix(1);
+        }
+        type = Qt26Private::normalizedType(type);
+        // same special cases as in Moc::createPropertyDef
+        if (type == "QMap")
+            type = "QMap<QString,QVariant>";
+        else if (type == "LongLong")
+            type = "qlonglong";
+        else if (type == "ULongLong")
+            type = "qulonglong";
+        m_type = std::define_static_string(type);
+        m_name = name;
+
+        while (k < tokens.size()) {
+            const std::string_view key = tokens[k++];
+            if (key == "CONSTANT") {
+                m_constant = true;
+            } else if (key == "FINAL") {
+                m_final = true;
+            } else if (key == "REQUIRED") {
+                m_required = true;
+            } else if (key == "VIRTUAL") {
+                m_virtual = true;
+            } else if (key == "OVERRIDE") {
+                m_override = true;
+            } else if (key.starts_with("REVISION(")) {
+                // REVISION(major, minor), possibly split into several tokens
+                std::string revision(key.substr(9));
+                while (!revision.ends_with(')') && k < tokens.size())
+                    revision += tokens[k++];
+                if (!revision.ends_with(')'))
+                    throw std::invalid_argument("Unterminated REVISION");
+                revision.pop_back();
+                const std::string_view text = revision;
+                const auto comma = text.find(',');
+                const int major = Qt26Private::parseInt(text.substr(0, comma));
+                const int minor = comma == text.npos ? 0
+                                                     : Qt26Private::parseInt(text.substr(comma + 1));
+                m_revision = (major << 8) | minor;
+            } else {
+                if (k == tokens.size())
+                    throw std::invalid_argument("Property attribute without value");
+                const std::string_view value = tokens[k++];
+                if (key == "READ")
+                    m_getter = value;
+                else if (key == "WRITE")
+                    m_setter = value;
+                else if (key == "MEMBER")
+                    m_member = value;
+                else if (key == "RESET")
+                    m_reset = value;
+                else if (key == "NOTIFY")
+                    m_notify = value;
+                else if (key == "BINDABLE")
+                    m_bindable = value;
+                else if (key == "DESIGNABLE")
+                    m_designable = value;
+                else if (key == "SCRIPTABLE")
+                    m_scriptable = value;
+                else if (key == "STORED")
+                    m_stored = value;
+                else if (key == "USER")
+                    m_user = value;
+                else if (key == "REVISION") // QTypeRevision::fromMinorVersion, major unknown
+                    m_revision = (0xff << 8) | Qt26Private::parseInt(value);
+                else
+                    throw std::invalid_argument("Unknown property attribute");
             }
-            ++section;
-            i = sectionEnd + 1;
-        } while (sectionEnd != description.npos);
+        }
     }
 
     friend QDebug operator<<(QDebug dbg, const QStaticMetaProperty &that)
@@ -232,6 +353,19 @@ struct QStaticMetaProperty : QStaticMetaData
     std::string_view m_getter;
     std::string_view m_setter;
     std::string_view m_notify;
+    std::string_view m_member;
+    std::string_view m_reset;
+    std::string_view m_bindable;
+    std::string_view m_designable = "true";
+    std::string_view m_scriptable = "true";
+    std::string_view m_stored = "true";
+    std::string_view m_user = "false";
+    int m_revision = 0;
+    bool m_constant = false;
+    bool m_final = false;
+    bool m_required = false;
+    bool m_virtual = false;
+    bool m_override = false;
 };
 
 struct QStaticMetaEnum : QStaticMetaData
