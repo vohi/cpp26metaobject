@@ -16,6 +16,10 @@
 
 struct Object;
 
+namespace Qt26 {
+    enum class MetaEntity;
+}
+
 namespace Qt26Private
 {
     template <typename Fn, std::size_t ...Is>
@@ -50,6 +54,30 @@ namespace Qt26Private
     {
         return make_tuple_impl<Tuple>(args, std::make_index_sequence<std::tuple_size_v<Tuple>>{});
     }
+
+    // Function types as used by QtMocHelpers::FunctionData
+    template <typename R, typename ...A>
+    using FunctionType = R(A...);
+    template <typename R, typename ...A>
+    using ConstFunctionType = R(A...) const;
+
+    // Like moc's qt_meta_tag_XXX_t: a type that is unique to the translation unit
+    // that implements the meta object.
+    namespace {
+    template <typename Class>
+    struct MetaObjectTag {};
+    }
+
+    // The QMetaType::Type for types that moc treats as builtin, or UnknownType.
+    // Like QMetaObject::normalizedType, "const T &" and "const T" are treated as "T".
+    template <typename T>
+    inline constexpr int builtinMetaTypeId = [] {
+        using U = std::conditional_t<std::is_reference_v<T>, T, std::remove_const_t<T>>;
+        if constexpr (QMetaTypeId2<U>::IsBuiltIn)
+            return int(QMetaTypeId2<U>::MetaType);
+        else
+            return int(QMetaType::UnknownType);
+    }();
 
     consteval bool isIdentifierChar(char c)
     {
@@ -96,6 +124,52 @@ namespace Qt26Private
         }
         return result;
     }
+
+    // A meta method as moc sees it. Methods with default arguments produce
+    // additional, cloned, entries with fewer arguments.
+    struct MethodInfo
+    {
+        std::meta::info member;
+        Qt26::MetaEntity type;
+        std::size_t argc;
+        bool cloned;
+    };
+
+    // Implements the interface of QtMocHelpers::StringRefStorage that
+    // QtMocHelpers::metaObjectData uses, without requiring string literals.
+    template <std::size_t Count, std::size_t Size>
+    struct MocStringData
+    {
+        static_assert(Size <= QtMocHelpers::MaxStringSize, "Meta Object data is too big");
+        static constexpr int StringCount = int(Count);
+        static constexpr std::size_t StringSize = Size;
+
+        char strings[Size] = {}; // null-terminated strings
+        uint lengths[Count] = {};
+
+        constexpr void writeTo(uint (&offsets)[2 * Count], char (&data)[Size]) const noexcept
+        {
+            uint offset = 0;
+            for (std::size_t i = 0; i < Count; ++i) {
+                offsets[2 * i] = offset + sizeof(offsets);
+                offsets[2 * i + 1] = lengths[i];
+                offset += lengths[i] + 1;
+            }
+            for (std::size_t i = 0; i < Size; ++i)
+                data[i] = strings[i];
+        }
+
+        consteval uint indexOf(std::string_view str) const
+        {
+            std::size_t offset = 0;
+            for (std::size_t i = 0; i < Count; ++i) {
+                if (std::string_view(strings + offset, lengths[i]) == str)
+                    return uint(i);
+                offset += lengths[i] + 1;
+            }
+            throw std::logic_error("We forgot to register some strings");
+        }
+    };
 }
 
 namespace Qt26 {
@@ -658,9 +732,15 @@ struct QStaticMetaObjectImpl : QStaticMetaObject
 public:
     friend Class;
 
+    // Like moc, include private members in the meta object
+    static consteval std::meta::access_context accessContext()
+    {
+        return std::meta::access_context::unchecked();
+    }
+
     static consteval std::optional<std::meta::info> memberFunction(std::string_view name)
     {
-        for (auto member : members_of(^^Class, std::meta::access_context::current())) {
+        for (auto member : members_of(^^Class, accessContext())) {
             if (has_identifier(member) && is_function(member) && identifier_of(member) == name) {
                 return member;
             }
@@ -668,20 +748,51 @@ public:
         return std::nullopt;
     }
 
+    // The meta methods of Class in the order moc generates them: signals,
+    // slots, invokable methods, each in declaration order, and each method
+    // with default arguments followed by its clones with fewer arguments.
+    static consteval std::span<const Qt26Private::MethodInfo> methodInfos()
+    {
+        std::vector<Qt26Private::MethodInfo> result;
+        constexpr Qt26::MetaEntity order[] = {
+            Qt26::MetaEntity::Signal, Qt26::MetaEntity::Slot, Qt26::MetaEntity::Method
+        };
+        for (const auto entity : order) {
+            for (auto member : members_of(^^Class, accessContext())) {
+                if (!is_function(member) || !has_identifier(member)
+                 || is_function_template(member) || is_special_member_function(member)) {
+                    continue;
+                }
+                const auto annotations = annotations_of_with_type(member, ^^Qt26::MetaEntity);
+                if (annotations.size() != 1 || extract<Qt26::MetaEntity>(annotations.front()) != entity)
+                    continue;
+                const auto parameters = parameters_of(member);
+                std::size_t argc = parameters.size();
+                result.push_back({member, entity, argc, false});
+                while (argc > 0 && has_default_argument(parameters[argc - 1])) {
+                    --argc;
+                    result.push_back({member, entity, argc, true});
+                }
+            }
+        }
+        return std::define_static_array(result);
+    }
+
+    static consteval std::span<const std::meta::info> parametersOf(Qt26Private::MethodInfo info)
+    {
+        return std::define_static_array(parameters_of(info.member) | std::views::take(info.argc));
+    }
+
     template <std::meta::info needle, Qt26::MetaEntity entity>
     static consteval std::size_t indexOfMemberWithType()
     {
         std::size_t index = methodOffset();
-        for (auto member : members_of(^^Class, std::meta::access_context::current())) {
-            if (has_identifier(member) && is_function(member)) {
-                auto annotations = annotations_of_with_type(member, ^^Qt26::MetaEntity);
-                if (annotations.size() > 0 && extract<Qt26::MetaEntity>(annotations.at(0)) == entity) {
-                    if (member == needle)
-                        return index;
-                    ++index;
-                }
-            }
+        for (const auto &info : methodInfos()) {
+            if (info.member == needle && info.type == entity && !info.cloned)
+                return index;
+            ++index;
         }
+        throw std::logic_error("Not a meta method of the requested type");
     }
 
 
@@ -930,33 +1041,18 @@ public:
     static constexpr std::vector<QStaticMetaMethod> directMethods()
     {
         std::vector<QStaticMetaMethod> result;
-        int i = 0;
-        template for (constexpr auto member
-                      : std::define_static_array(members_of(^^Class, std::meta::access_context::current()))) {
-            if constexpr (is_function(member) && has_identifier(member)) {
-                if constexpr (annotations_of_with_type(member, ^^Qt26::MetaEntity).size() == 1) {
-                    constexpr Qt26::MetaEntity methodType = extract<Qt26::MetaEntity>(
-                        annotations_of_with_type(member, ^^Qt26::MetaEntity).front()
-                    );
-                    if constexpr (methodType != Qt26::MetaEntity::Unknown) {
-                        constexpr auto return_type = return_type_of(member);
-                        static_assert(return_type == ^^void,
-                                      "Meta-methods with return type are not supported yet!");
-                        QStaticMetaMethod method(methodType, identifier_of(member));
-                        method.m_index = i;
-                        template for (constexpr auto parameter
-                                      : std::define_static_array(parameters_of(member))) {
-                            using type = [:type_of(parameter):];
-                            method.m_parameters.push_back({QMetaType::fromType<std::remove_cvref_t<type>>(),
-                                                           has_identifier(parameter)
-                                                               ? identifier_of(parameter)
-                                                               : std::string_view("")});
-                        }
-                        result.push_back(method);
-                    }
-                }
+        std::size_t i = 0;
+        template for (constexpr Qt26Private::MethodInfo info : methodInfos()) {
+            static_assert(return_type_of(info.member) == ^^void,
+                          "Meta-methods with return type are not supported yet!");
+            QStaticMetaMethod method(info.type, identifier_of(info.member));
+            method.m_index = i++;
+            template for (constexpr auto parameter : parametersOf(info)) {
+                using type = [:type_of(parameter):];
+                method.m_parameters.push_back({QMetaType::fromType<std::remove_cvref_t<type>>(),
+                                               parameterName(parameter)});
             }
-            ++i;
+            result.push_back(method);
         }
         return result;
     }
@@ -1080,16 +1176,14 @@ public:
         case QMetaObject::InvokeMetaMethod:
             if (what < directMethods().size()) {
                 const QStaticMetaMethod method = directMethods().at(what);
-                Qt26Private::expand_at<members_of(^^Class, std::meta::access_context::current()).size()>(method.m_index, [&](auto Idx){
-                    constexpr auto member = members_of(^^Class, std::meta::access_context::current()).at(Idx);
-                    if constexpr (is_function(member)
-                               && annotations_of_with_type(member, ^^Qt26::MetaEntity).size() == 1) {
-                        using ArgTuple = [:Qt26Private::tuple_type(parameters_of(member)):];
-                        auto callargs = Qt26Private::make_tuple<ArgTuple>(args);
-                        std::apply([object](auto &&...a) {
-                            object->[:member:](a...);
-                        }, callargs);
-                    }
+                Qt26Private::expand_at<methodInfos().size()>(method.m_index, [&](auto Idx){
+                    constexpr Qt26Private::MethodInfo info = methodInfos()[Idx];
+                    // cloned methods are called with fewer arguments
+                    using ArgTuple = [:Qt26Private::tuple_type(parametersOf(info)):];
+                    auto callargs = Qt26Private::make_tuple<ArgTuple>(args);
+                    std::apply([object](auto &&...a) {
+                        object->[:info.member:](a...);
+                    }, callargs);
                 });
             }
             what -= directMethods().size();
@@ -1155,99 +1249,424 @@ public:
     }
 
 private:
-    struct Sizes
-    {
-        std::size_t strings = 0;
-        std::size_t data = 16;
-        std::size_t relatedMetaObjects = 0;
-        std::size_t metaTypes = 0;
-        std::size_t extradata = 0;
-    };
+    // Helpers that produce the strings and type information the way moc does
 
-    static constexpr Sizes sizes()
+    static consteval std::string_view parameterName(std::meta::info parameter)
     {
-        Sizes sizes;
-        sizes.strings += className().size() + 1;
-        for (auto base : bases())
-            sizes.strings += base.size() + 1;
-        for (auto property : properties())
-            sizes.strings += property.size();
-        for (auto enumerator : enumerators())
-            sizes.strings += enumerator.size();
-        for (auto classInfo : classInfos())
-            sizes.strings += classInfo.size();
-        for (auto method : methods())
-            sizes.strings += method.size();
-        return sizes;
+        return has_identifier(parameter) ? identifier_of(parameter) : std::string_view("");
     }
 
-    template <typename Array>
-    static constexpr std::size_t addInt(Array &array, std::size_t index, uint value)
+    // moc doesn't support references as return types, and uses void instead
+    static consteval std::meta::info returnType(std::meta::info member)
     {
-        array[index] = value;
-        return index + 1;
-    };
+        const auto type = return_type_of(member);
+        return is_reference_type(type) ? ^^void : type;
+    }
 
-    template <typename Array>
-    static constexpr std::size_t addString(Array &array, std::size_t index, std::string_view str)
+    static consteval int builtinTypeId(std::meta::info type)
     {
-        // start of string = two ints past head
-        index = addInt(array, index, index + 2*sizeof(int));
-        index = addInt(array, index, str.size());
+        return extract<int>(substitute(^^Qt26Private::builtinMetaTypeId, {type}));
+    }
 
-        // string with constexpr compliant 4*char -> uint conversion
-        char offset = 0;
-        for (const uint ch : str) {
-            array[index] |= (ch << CHAR_BIT * offset);
-            if (++offset == sizeof(int)) {
-                offset = 0;
-                ++index;
+    static consteval bool isBuiltinType(std::meta::info type)
+    {
+        return builtinTypeId(type) != QMetaType::UnknownType;
+    }
+
+    // The fully qualified class name, as in moc's ClassDef::qualified
+    static consteval std::string_view qualifiedClassName()
+    {
+        if (!has_identifier(^^Class))
+            return display_string_of(^^Class);
+        std::string name(identifier_of(^^Class));
+        for (auto scope = parent_of(^^Class);
+             scope != ^^:: && (is_namespace(scope) || is_type(scope));
+             scope = parent_of(scope)) {
+            if (has_identifier(scope)) // skip anonymous namespaces
+                name = std::string(identifier_of(scope)) + "::" + name;
+        }
+        return std::define_static_string(name);
+    }
+
+    // The normalized name of a type, for types that are not builtin. Unlike
+    // moc, we don't have the type as spelled in the source code, so we use
+    // the display string, without the scope of the class itself.
+    static consteval std::string_view typeName(std::meta::info type)
+    {
+        if (is_lvalue_reference_type(type) && is_const(remove_reference(type)))
+            type = remove_const(remove_reference(type));
+        else if (!is_reference_type(type) && is_const(type))
+            type = remove_const(type);
+        std::string name = Qt26Private::normalizedType(display_string_of(type));
+        const std::string scope = std::string(qualifiedClassName()) + "::";
+        if (name.starts_with(scope))
+            name.erase(0, scope.size());
+        return std::define_static_string(name);
+    }
+
+    // The types (as written in Q26_ENUM) of the enums registered for Class
+    static consteval std::span<const std::meta::info> enumTypes()
+    {
+        std::vector<std::meta::info> result;
+        for (auto annotation : annotations_of(^^typename Class::QStaticMetaObjectData)) {
+            const auto type = type_of(annotation);
+            if (has_template_arguments(type) && template_of(type) == ^^Qt26::Enumerator)
+                result.push_back(template_arguments_of(type).front());
+        }
+        return std::define_static_array(result);
+    }
+
+    // The type of a property, from its MEMBER variable or its READ function
+    static consteval std::meta::info propertyType(const QStaticMetaProperty &property)
+    {
+        for (auto member : members_of(^^Class, accessContext())) {
+            if (!has_identifier(member))
+                continue;
+            if (!property.m_member.empty() && is_nonstatic_data_member(member)
+             && identifier_of(member) == property.m_member) {
+                return remove_cvref(type_of(member));
+            }
+            if (property.m_member.empty() && is_function(member) && !is_function_template(member)
+             && identifier_of(member) == property.m_getter && parameters_of(member).empty()) {
+                return remove_cvref(return_type_of(member));
             }
         }
-        if (offset)
-            ++index;
-        return index;
-    };
-
-    static constexpr Sizes dataSizes = sizes();
-
-    static constexpr auto makeStringData() {
-        std::array<uint, dataSizes.strings> stringData = {};
-        std::size_t index = 0;
-        index = addString(stringData, index, className());
-        return stringData;
+        throw std::invalid_argument("Cannot determine the type of the property");
     }
-    static constexpr auto stringData = makeStringData();
-    static constexpr std::array<uint, dataSizes.data> intData {
-        QtMocConstants::OutputRevision,
-        0, // className
-        0, // classInfoCount
-        0, // classInfoData
-        0, // methodCount
-        0, // methodData
-        0, // propertyCount
-        0, // propertyData
-        0, // enumeratorCount
-        0, // enumeratorData
-        0, // constructorCount
-        0, // constructorData
-        0, // flags
-        0, // signalCount
-        0, // metaObjectHashIndex
-    };
+
+    // Index of the signal within the signals of Class, or -1
+    static consteval int notifySignalIndex(std::string_view name)
+    {
+        int index = 0;
+        for (const auto &info : methodInfos()) {
+            if (info.type != Qt26::MetaEntity::Signal)
+                break;
+            if (identifier_of(info.member) == name)
+                return index;
+            ++index;
+        }
+        return -1;
+    }
+
+    // NOTIFY signals that are not declared in Class, like moc's nonClassSignalList
+    static consteval std::vector<std::string_view> nonClassSignals()
+    {
+        std::vector<std::string_view> result;
+        for (const auto &property : directProperties()) {
+            if (!property.m_notify.empty() && notifySignalIndex(property.m_notify) == -1
+             && std::ranges::find(result, property.m_notify) == result.end()) {
+                result.push_back(property.m_notify);
+            }
+        }
+        return result;
+    }
+
+    // All strings, registered in the same order as moc's Generator::generateCode
+    static consteval std::vector<std::string_view> collectStrings()
+    {
+        std::vector<std::string_view> strings;
+        const auto strreg = [&strings](std::string_view str) {
+            if (std::ranges::find(strings, str) == strings.end())
+                strings.push_back(str);
+        };
+
+        strreg(qualifiedClassName());
+        for (const auto &classInfo : directClassInfos()) {
+            strreg(classInfo.m_name);
+            strreg(classInfo.m_value);
+        }
+        for (const auto &info : methodInfos()) {
+            strreg(identifier_of(info.member));
+            if (const auto type = returnType(info.member); !isBuiltinType(type))
+                strreg(typeName(type));
+            strreg(""); // tag
+            for (auto parameter : parametersOf(info)) {
+                if (const auto type = type_of(parameter); !isBuiltinType(type))
+                    strreg(typeName(type));
+                strreg(parameterName(parameter));
+            }
+        }
+        for (auto signal : nonClassSignals())
+            strreg(signal);
+        for (const auto &property : directProperties()) {
+            strreg(property.m_name);
+            if (!isBuiltinType(propertyType(property)))
+                strreg(property.m_type);
+        }
+        for (auto enumType : enumTypes()) {
+            strreg(identifier_of(enumType));
+            for (auto enumerator : enumerators_of(dealias(enumType)))
+                strreg(identifier_of(enumerator));
+        }
+        return strings;
+    }
+
+    static consteval auto mocStrings()
+    {
+        constexpr std::size_t count = collectStrings().size();
+        constexpr std::size_t size = [] {
+            std::size_t size = 0;
+            for (auto str : collectStrings())
+                size += str.size() + 1;
+            return size;
+        }();
+
+        Qt26Private::MocStringData<count, size> result;
+        std::size_t offset = 0;
+        std::size_t index = 0;
+        for (auto str : collectStrings()) {
+            for (char ch : str)
+                result.strings[offset++] = ch;
+            result.strings[offset++] = '\0';
+            result.lengths[index++] = uint(str.size());
+        }
+        return result;
+    }
+
+    static consteval uint stridx(std::string_view str)
+    {
+        static constexpr auto strings = mocStrings();
+        return strings.indexOf(str);
+    }
+
+    // Like moc's Generator::generateTypeInfo
+    static consteval uint typeInfo(std::meta::info type)
+    {
+        if (const int id = builtinTypeId(type); id != QMetaType::UnknownType)
+            return uint(id);
+        return QtMocConstants::IsUnresolvedType | stridx(typeName(type));
+    }
+
+    // Methods
+
+    static consteval uint methodFlags(Qt26Private::MethodInfo info)
+    {
+        using namespace QtMocConstants;
+        uint flags = is_public(info.member) ? AccessPublic
+                   : is_protected(info.member) ? AccessProtected
+                   : AccessPrivate;
+        if (info.cloned)
+            flags |= MethodCloned;
+        return flags;
+    }
+
+    // QtMocHelpers::SignalData/SlotData/MethodData<Ret(Args...) [const]>
+    static consteval std::meta::info methodDataType(Qt26Private::MethodInfo info)
+    {
+        std::vector<std::meta::info> signature = { returnType(info.member) };
+        for (auto parameter : parametersOf(info))
+            signature.push_back(type_of(parameter));
+        const auto function = dealias(substitute(is_const(type_of(info.member))
+                                                 ? ^^Qt26Private::ConstFunctionType
+                                                 : ^^Qt26Private::FunctionType, signature));
+        switch (info.type) {
+        case Qt26::MetaEntity::Signal:
+            return substitute(^^QtMocHelpers::SignalData, {function});
+        case Qt26::MetaEntity::Slot:
+            return substitute(^^QtMocHelpers::SlotData, {function});
+        case Qt26::MetaEntity::Method:
+            return substitute(^^QtMocHelpers::MethodData, {function});
+        default:
+            break;
+        }
+        throw std::logic_error("Unsupported method type");
+    }
+
+    template <std::size_t I>
+    static constexpr auto methodData()
+    {
+        constexpr Qt26Private::MethodInfo info = methodInfos()[I];
+        using Data = [:methodDataType(info):];
+
+        typename Data::ParametersArray parameters = {};
+        std::size_t index = 0;
+        template for (constexpr auto parameter : parametersOf(info)) {
+            parameters[index++] = { typeInfo(type_of(parameter)), stridx(parameterName(parameter)) };
+        }
+        return Data(stridx(identifier_of(info.member)), stridx(""), methodFlags(info),
+                    typeInfo(returnType(info.member)), parameters);
+    }
+
+    template <std::size_t ...I>
+    static constexpr auto methodsData(std::index_sequence<I...>)
+    {
+        return QtMocHelpers::UintData{ methodData<I>()... };
+    }
+
+    // Properties
+
+    static consteval uint propertyTypeInfo(const QStaticMetaProperty &property)
+    {
+        if (const int id = builtinTypeId(propertyType(property)); id != QMetaType::UnknownType)
+            return uint(id);
+        return QtMocConstants::IsUnresolvedType | stridx(property.m_type);
+    }
+
+    // Like moc's Generator::addProperties
+    static consteval uint propertyFlags(const QStaticMetaProperty &property)
+    {
+        using namespace QtMocConstants;
+        const bool readable = !property.m_getter.empty() || !property.m_member.empty();
+        const bool writable = (!property.m_member.empty() && !property.m_constant)
+                           || !property.m_setter.empty();
+        const bool designable = property.m_designable != "false";
+        const bool scriptable = property.m_scriptable != "false";
+        const bool stored = property.m_stored != "false";
+
+        uint flags = Invalid;
+        if (readable && designable && scriptable && stored) {
+            flags |= DefaultPropertyFlags;
+        } else {
+            if (readable)
+                flags |= Readable;
+            if (designable)
+                flags |= Designable;
+            if (scriptable)
+                flags |= Scriptable;
+            if (stored)
+                flags |= Stored;
+        }
+        if (writable)
+            flags |= Writable;
+        if (!property.m_reset.empty())
+            flags |= Resettable;
+        if (!isBuiltinType(propertyType(property)))
+            flags |= EnumOrFlag;
+        if (const auto name = property.m_name; !name.empty()) {
+            std::string setter = "set";
+            setter += (name[0] >= 'a' && name[0] <= 'z') ? char(name[0] - 'a' + 'A') : name[0];
+            setter += name.substr(1);
+            if (setter == property.m_setter)
+                flags |= StdCppSet;
+        }
+        if (property.m_constant)
+            flags |= Constant;
+        if (property.m_final)
+            flags |= Final;
+        if (property.m_virtual)
+            flags |= Virtual;
+        if (property.m_override)
+            flags |= Override;
+        if (property.m_user != "false")
+            flags |= User;
+        if (property.m_required)
+            flags |= Required;
+        if (!property.m_bindable.empty())
+            flags |= Bindable;
+        return flags;
+    }
+
+    static consteval uint notifyId(const QStaticMetaProperty &property)
+    {
+        if (property.m_notify.empty())
+            return uint(-1);
+        if (const int index = notifySignalIndex(property.m_notify); index != -1)
+            return uint(index);
+        // signal is in a parent class
+        return QtMocConstants::IsUnresolvedSignal | stridx(property.m_notify);
+    }
+
+    template <std::size_t I>
+    static constexpr auto propertyData()
+    {
+        using Type = [:propertyType(directProperties()[I]):];
+        return QtMocHelpers::PropertyData<Type>(stridx(directProperties()[I].m_name),
+                                                propertyTypeInfo(directProperties()[I]),
+                                                propertyFlags(directProperties()[I]),
+                                                notifyId(directProperties()[I]),
+                                                uint(directProperties()[I].m_revision));
+    }
+
+    template <std::size_t ...I>
+    static constexpr auto propertiesData(std::index_sequence<I...>)
+    {
+        return QtMocHelpers::UintData{ propertyData<I>()... };
+    }
+
+    // Enums
+
+    template <std::size_t I>
+    static constexpr auto enumData()
+    {
+        constexpr auto enumType = enumTypes()[I];
+        using Enum = [:enumType:];
+        using Data = QtMocHelpers::EnumData<Enum>;
+        constexpr uint nameIndex = stridx(identifier_of(enumType));
+        constexpr uint flags = is_scoped_enum_type(dealias(enumType)) ? QtMocConstants::EnumIsScoped
+                                                                      : 0;
+        const Data data(nameIndex, nameIndex, flags);
+
+        static constexpr auto enumerators = std::define_static_array(enumerators_of(dealias(enumType)));
+        if constexpr (enumerators.empty()) {
+            return data;
+        } else {
+            typename Data::EnumEntry entries[enumerators.size()] = {};
+            std::size_t index = 0;
+            template for (constexpr auto enumerator : enumerators) {
+                entries[index++] = { int(stridx(identifier_of(enumerator))), [:enumerator:] };
+            }
+            return data.add(entries);
+        }
+    }
+
+    template <std::size_t ...I>
+    static constexpr auto enumsData(std::index_sequence<I...>)
+    {
+        return QtMocHelpers::UintData{ enumData<I>()... };
+    }
+
+    // Class infos
+
+    static consteval auto classInfoData()
+    {
+        constexpr std::size_t count = directClassInfos().size();
+        if constexpr (count == 0) {
+            return QtMocHelpers::detail::UintDataBlock<0, 0>{};
+        } else {
+            std::array<uint, 2> infos[count] = {};
+            std::size_t index = 0;
+            for (const auto &classInfo : directClassInfos())
+                infos[index++] = { stridx(classInfo.m_name), stridx(classInfo.m_value) };
+            return QtMocHelpers::ClassInfos<int(count)>(infos);
+        }
+    }
+
+    // Like moc, the superclass of the QMetaObject is the first base class
+    static constexpr QMetaObject::SuperData superData()
+    {
+        constexpr auto bases = std::define_static_array(bases_of(^^Class, accessContext()));
+        if constexpr (!bases.empty()) {
+            using Base = [:type_of(bases.front()):];
+            if constexpr (requires { Base::staticMetaObject; })
+                return QMetaObject::SuperData::link<Base::staticMetaObject>();
+        }
+        return nullptr;
+    }
 
 public:
-    static constexpr auto finalize()
+    // The equivalent of the moc-generated qt_create_metaobjectdata<Tag>()
+    template <typename Tag, uint Flags = QtMocConstants::MetaObjectFlag{}>
+    static constexpr auto createMetaObjectData()
     {
-        // Rest is left as an exercise for the reader.
-        // This is PoC that we can construct the data at compile time,
-        // and only have to assemble the QMetaObject::Data object at initialization
-        // time.
+        return QtMocHelpers::metaObjectData<Class, Tag>(Flags, mocStrings(),
+                    methodsData(std::make_index_sequence<methodInfos().size()>{}),
+                    propertiesData(std::make_index_sequence<directProperties().size()>{}),
+                    enumsData(std::make_index_sequence<enumTypes().size()>{}),
+                    QtMocHelpers::UintData<>{}, // constructors
+                    classInfoData());
+    }
 
+    template <typename Tag>
+    static constexpr QMetaObject::Data finalize()
+    {
         return QMetaObject::Data{
-            {}, // Super
-            stringData.data(),
-            intData.data()
+            superData(),
+            Class::template qt_staticMetaObjectStaticContent<Tag>.stringdata,
+            Class::template qt_staticMetaObjectStaticContent<Tag>.data,
+            nullptr, // static_metacall; Q26 objects are not QObjects
+            nullptr, // relatedMetaObjects
+            Class::template qt_staticMetaObjectRelocatingContent<Tag>.metaTypes,
+            nullptr  // extradata
         };
     }
 };
@@ -1263,7 +1682,8 @@ constexpr auto QStaticMetaObject::fromType()
 #define Q26_OBJECT_STATICS \
     static Qt26::QStaticMetaObject staticQ26MetaObject; \
     static QMetaObject staticMetaObject; \
-    struct QStaticMetaObjectData;
+    struct QStaticMetaObjectData; \
+    QT_META_OBJECT_VARS
 
 #define Q26_OBJECT \
 public: \
@@ -1271,19 +1691,30 @@ public: \
     const QMetaObject *metaObject() const override { return &staticMetaObject; } \
     int qt_metacall(QMetaObject::Call, int, void **) override; \
     Q26_OBJECT_STATICS \
-    QT_META_OBJECT_VARS \
 private:
+
+// Expands to the same specialization of qt_create_metaobjectdata as moc generates,
+// and initializes the QMetaObject from the qt_staticMetaObject*Content variables
+// declared by QT_META_OBJECT_VARS.
+#define Q26_METAOBJECT_IMPL(Class, Flags) \
+    template <> constexpr inline auto Class::qt_create_metaobjectdata<Qt26Private::MetaObjectTag<Class>>() \
+    { \
+        return Qt26::QStaticMetaObjectImpl<Class>::createMetaObjectData< \
+            Qt26Private::MetaObjectTag<Class>, Flags>(); \
+    } \
+    QMetaObject Class::staticMetaObject = { \
+        Qt26::QStaticMetaObjectImpl<Class>::finalize<Qt26Private::MetaObjectTag<Class>>() \
+    };
 
 #define Q26_OBJECT_IMPL(Class) \
     Qt26::QStaticMetaObject Class::staticQ26MetaObject = Qt26::QStaticMetaObject::fromType<Class>(); \
-    QMetaObject Class::staticMetaObject = { Qt26::QStaticMetaObjectImpl<Class>::finalize() }; \
+    Q26_METAOBJECT_IMPL(Class, QtMocConstants::MetaObjectFlag{}) \
     int Class::qt_metacall(QMetaObject::Call call, int what, void **args) \
     { return Qt26::QStaticMetaObjectImpl<Class>::static_metacall(this, call, what, args); }
 
 #define Q26_GADGET \
 public: \
     Q26_OBJECT_STATICS \
-    QT_META_OBJECT_VARS \
 private:
 
 #define Q26_OBJECT_INLINE \
@@ -1297,7 +1728,7 @@ public: \
 
 #define Q26_GADGET_IMPL(Class) \
     Qt26::QStaticMetaObject Class::staticQ26MetaObject = Qt26::QStaticMetaObject::fromType<Class>(); \
-    QMetaObject Class::staticMetaObject = { Qt26::QStaticMetaObjectImpl<Class>::finalize() };
+    Q26_METAOBJECT_IMPL(Class, QtMocConstants::PropertyAccessInStaticMetaCall)
 
 #define Q26_PROPERTY(Declaration) \
 public: \
