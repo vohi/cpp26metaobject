@@ -814,7 +814,9 @@ public:
                                       : std::define_static_array(parameters_of(member))) {
                             using type = [:type_of(parameter):];
                             method.m_parameters.push_back({QMetaType::fromType<std::remove_cvref_t<type>>(),
-                                                           identifier_of(parameter)});
+                                                           has_identifier(parameter)
+                                                               ? identifier_of(parameter)
+                                                               : std::string_view("")});
                         }
                         result.push_back(method);
                     }
@@ -1175,6 +1177,8 @@ public: \
 private:
 
 #define Q26_SIGNAL [[=Qt26::MetaEntity::Signal]]
+
+#define Q26_SLOT [[=Qt26::MetaEntity::Slot]]
 
 #define Q26_INVOKABLE [[=Qt26::MetaEntity::Method]]
 
