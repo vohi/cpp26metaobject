@@ -40,27 +40,6 @@ namespace Qt26Private
         expand_while(std::forward<Fn>(fn), std::make_index_sequence<S>{});
     }
 
-    namespace __impl {
-    template<auto... vals>
-    struct replicator_type {
-        template<typename F>
-        constexpr void operator>>(F body) const {
-            (body.template operator()<vals>(), ...);
-        }
-    };
-
-    template<auto... vals>
-    replicator_type<vals...> replicator = {};
-    }
-
-    template<typename R>
-    consteval auto expand(R range) {
-    std::vector<std::meta::info> args;
-    for (auto r : range)
-        args.push_back(reflect_constant(r));
-    return substitute(^^__impl::replicator, args);
-    }
-
     template <typename R>
     consteval auto tuple_type(R range) {
         std::vector<std::meta::info> args;
@@ -318,12 +297,12 @@ struct QStaticMetaEnumImpl : QStaticMetaEnum
     {
         std::vector<Item> result;
 
-        [:Qt26Private::expand(enumerators_of(^^Enum)):] >> [&result]<auto item>{
+        template for (constexpr auto item : std::define_static_array(enumerators_of(^^Enum))) {
             result.emplace_back(
                 identifier_of(item),
                 static_cast<long>(extract<Enum>(constant_of(item)))
             );
-        };
+        }
 
         return result;
     }
@@ -601,8 +580,8 @@ public:
 public:
     static consteval void getUniqueBases(std::vector<std::meta::info> &bases)
     {
-        [:Qt26Private::expand(bases_of(^^Class, std::meta::access_context::current())):]
-        >> [&]<auto base> {
+        template for (constexpr auto base
+                      : std::define_static_array(bases_of(^^Class, std::meta::access_context::current()))) {
             constexpr auto baseType = type_of(base);
             if (!is_virtual_base_of_type(baseType, ^^Class)) {
                 bases.insert(bases.begin(), baseType);
@@ -616,7 +595,7 @@ public:
             using Base = [:baseType:];
             using BaseMO = Qt26::QStaticMetaObjectImpl<Base>;
             BaseMO::getUniqueBases(bases);
-        };
+        }
     }
 
     static consteval auto uniqueBases()
@@ -631,12 +610,11 @@ public:
     static constexpr auto withBases(Fn &&fn)
     {
         bool cont = true;
-        [:Qt26Private::expand(uniqueBases()):]
-        >> [&]<auto base> {
+        template for (constexpr auto base : uniqueBases()) {
             using Base = [:base:];
             using BaseMO = Qt26::QStaticMetaObjectImpl<Base>;
             cont = cont && (std::forward<Fn>(fn).template operator()<BaseMO>(), true);
-        };
+        }
         return cont;
     }
 
@@ -652,12 +630,12 @@ public:
     static constexpr std::vector<std::string_view> bases()
     {
         std::vector<std::string_view> result;
-        [:Qt26Private::expand(bases_of(^^Class, std::meta::access_context::current())):]
-        >> [&result]<auto base>{
+        template for (constexpr auto base
+                      : std::define_static_array(bases_of(^^Class, std::meta::access_context::current()))) {
             using Base = [:type_of(base):];
             using BaseMO = Qt26::QStaticMetaObjectImpl<Base>;
             result.push_back(BaseMO::className());
-        };
+        }
 
         return result;
     }
@@ -827,8 +805,8 @@ public:
     {
         std::vector<QStaticMetaMethod> result;
         int i = 0;
-        [:Qt26Private::expand(members_of(^^Class, std::meta::access_context::current())):] >>
-            [&result, &i]<auto member> {
+        template for (constexpr auto member
+                      : std::define_static_array(members_of(^^Class, std::meta::access_context::current()))) {
             if constexpr (is_function(member) && has_identifier(member)) {
                 if constexpr (annotations_of_with_type(member, ^^Qt26::MetaEntity).size() == 1) {
                     constexpr Qt26::MetaEntity methodType = extract<Qt26::MetaEntity>(
@@ -840,18 +818,18 @@ public:
                                       "Meta-methods with return type are not supported yet!");
                         QStaticMetaMethod method(methodType, identifier_of(member));
                         method.m_index = i;
-                        [:Qt26Private::expand(parameters_of(member)):] >> [&method]<auto parameter> {
+                        template for (constexpr auto parameter
+                                      : std::define_static_array(parameters_of(member))) {
                             using type = [:type_of(parameter):];
                             method.m_parameters.push_back({QMetaType::fromType<std::remove_cvref_t<type>>(),
                                                            identifier_of(parameter)});
-                        };
+                        }
                         result.push_back(method);
                     }
                 }
             }
             ++i;
-            return false;
-        };
+        }
         return result;
     }
 

@@ -128,10 +128,9 @@ int main()
     { // this works if we get the q26MetaObject statically
         constexpr auto staticMetaObject = Qt26::QStaticMetaObject::fromType<decltype(user)>();
 
-        constexpr auto bases = Qt26::QStaticMetaObjectImpl<decltype(user)>::uniqueBases();
-        [:Qt26Private::expand(bases):] >> []<auto base> {
+        template for (constexpr auto base : Qt26::QStaticMetaObjectImpl<decltype(user)>::uniqueBases()) {
             qDebug() << identifier_of(base);
-        };
+        }
 
         constexpr auto propertyCount = staticMetaObject.propertyCount();
         constexpr auto firstProperty = staticMetaObject.property(0);
